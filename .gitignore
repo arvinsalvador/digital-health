@@ -1,53 +1,39 @@
-#-------------------------
-# Operating Specific Junk Files
-#-------------------------
+# =====================================================
+# Operating System Junk Files
+# =====================================================
 
-# OS X
+# macOS
 .DS_Store
 .AppleDouble
 .LSOverride
-
-# OS X Thumbnails
 ._*
 
-# Windows image file caches
+# Windows
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-
-# Recycle Bin used on file shares
 $RECYCLE.BIN/
-
-# Windows Installer files
 *.cab
 *.msi
 *.msm
 *.msp
-
-# Windows shortcuts
 *.lnk
 
 # Linux
 *~
-
-# KDE directory preferences
 .directory
-
-# Linux trash folder which might appear on any partition or disk
 .Trash-*
 
-#-------------------------
-# Environment Files
-#-------------------------
-# These should never be under version control,
-# as it poses a security risk.
+# =====================================================
+# Environment Files (NEVER COMMIT)
+# =====================================================
 .env
 .vagrant
 Vagrantfile
 
-#-------------------------
-# Temporary Files
-#-------------------------
+# =====================================================
+# Writable / Runtime Files (CodeIgniter)
+# =====================================================
 writable/cache/*
 !writable/cache/index.html
 
@@ -59,44 +45,71 @@ writable/session/*
 
 writable/uploads/*
 !writable/uploads/index.html
+!writable/uploads/.gitkeep
 
 writable/debugbar/*
 !writable/debugbar/index.html
 
 php_errors.log
 
-#-------------------------
+# =====================================================
 # User Guide Temp Files
-#-------------------------
+# =====================================================
 user_guide_src/build/*
 user_guide_src/cilexer/build/*
 user_guide_src/cilexer/dist/*
 user_guide_src/cilexer/pycilexer.egg-info/*
 
-#-------------------------
-# Test Files
-#-------------------------
+# =====================================================
+# Test / Coverage Files
+# =====================================================
 tests/coverage*
-
-# Don't save phpunit under version control.
 phpunit
+/results/
+phpunit*.xml
 
-#-------------------------
+# =====================================================
 # Composer
-#-------------------------
+# =====================================================
 vendor/
 
-#-------------------------
+# =====================================================
+# Database / Backup Safety
+# =====================================================
+*.sql
+*.bak
+*.zip
+
+# =====================================================
+# Node / Frontend (future dashboards)
+# =====================================================
+node_modules/
+npm-debug.log
+yarn.lock
+package-lock.json
+
+/public/build
+/public/hot
+
+# =====================================================
+# Security Keys & Credentials
+# =====================================================
+*.pem
+*.key
+*.crt
+firebase-service-account.json
+
+# =====================================================
 # IDE / Development Files
-#-------------------------
+# =====================================================
 
 # Modules Testing
 _modules/*
 
-# phpenv local config
+# phpenv
 .php-version
 
-# Jetbrains editors (PHPStorm, etc)
+# JetBrains (PHPStorm)
 .idea/
 *.iml
 
@@ -119,8 +132,10 @@ _modules/*
 .phpintel
 /api/
 
-# Visual Studio Code
+# VS Code
 .vscode/
 
-/results/
-/phpunit*.xml
+# =====================================================
+# Misc
+# =====================================================
+*.log
