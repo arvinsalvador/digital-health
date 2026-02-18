@@ -11,8 +11,11 @@ $routes->get('admin/dashboard', 'Admin\DashboardController::index');
 $routes->get('admin', 'Admin\DashboardController::index');
 
 $routes->group('admin/settings', function($routes){
-    $routes->get('modules','Admin\ModulesController::index');
-    $routes->post('modules/upload','Admin\ModulesController::upload');
+    $routes->get('modules', 'Admin\ModulesController::index');
+    $routes->post('modules/upload', 'Admin\ModulesController::upload');
+    $routes->post('modules/enable/(:segment)', 'Admin\ModulesController::enable/$1');
+    $routes->post('modules/disable/(:segment)', 'Admin\ModulesController::disable/$1');
+    $routes->post('modules/delete/(:segment)', 'Admin\ModulesController::delete/$1');
 });
 
 $enabledFile = WRITEPATH.'modules/enabled.php';

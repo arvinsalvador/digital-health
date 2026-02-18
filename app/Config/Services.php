@@ -4,6 +4,7 @@ namespace Config;
 
 use CodeIgniter\Config\BaseService;
 use App\Services\ModuleMenuService;
+use App\Services\ModuleBootstrapService;
 
 
 /**
@@ -39,4 +40,14 @@ class Services extends BaseService
 
         return new ModuleMenuService();
     }
+
+    public static function moduleBootstrap($getShared = true)
+    {
+        if ($getShared) {
+            return static::getSharedInstance('moduleBootstrap');
+        }
+
+        return new ModuleBootstrapService();
+    }
+
 }
