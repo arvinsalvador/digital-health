@@ -16,6 +16,11 @@ $routes->group('admin/settings', function($routes){
     $routes->post('modules/enable/(:segment)', 'Admin\ModulesController::enable/$1');
     $routes->post('modules/disable/(:segment)', 'Admin\ModulesController::disable/$1');
     $routes->post('modules/delete/(:segment)', 'Admin\ModulesController::delete/$1');
+    
+    $routes->get('locations', 'Admin\LocationsController::index');
+    $routes->get('locations/list', 'Admin\LocationsController::list');      // ?level=1&parent=PCODE
+    $routes->post('locations/toggle/(:segment)', 'Admin\LocationsController::toggle/$1');
+    $routes->post('locations/rename/(:segment)', 'Admin\LocationsController::rename/$1');
 });
 
 $enabledFile = WRITEPATH.'modules/enabled.php';
