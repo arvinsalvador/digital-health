@@ -21,6 +21,13 @@ $routes->group('admin/settings', function($routes){
     $routes->get('locations/list', 'Admin\LocationsController::list');      // ?level=1&parent=PCODE
     $routes->post('locations/toggle/(:segment)', 'Admin\LocationsController::toggle/$1');
     $routes->post('locations/rename/(:segment)', 'Admin\LocationsController::rename/$1');
+
+    $routes->get('users', 'Admin\UsersController::index');
+    $routes->get('users/create', 'Admin\UsersController::create');
+    $routes->post('users', 'Admin\UsersController::store');
+    $routes->get('users/(:num)/edit', 'Admin\UsersController::edit/$1');
+    $routes->post('users/(:num)', 'Admin\UsersController::update/$1');
+    $routes->post('users/(:num)/toggle', 'Admin\UsersController::toggle/$1');
 });
 
 $enabledFile = WRITEPATH.'modules/enabled.php';

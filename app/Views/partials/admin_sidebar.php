@@ -69,6 +69,12 @@
             <p>Locations</p>
           </a>
         </li>
+        <li class="nav-item">
+          <a href="<?= base_url('admin/settings/users') ?>" class="nav-link">
+            <i class="nav-icon fa-solid fa-users"></i>
+            <p>Users</p>
+          </a>
+        </li>
 
         <!-- Modules Manager -->
         <li class="nav-item">
