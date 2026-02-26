@@ -7,10 +7,15 @@ use CodeIgniter\Router\RouteCollection;
  */
 $routes->get('/', 'Home::index');
 
-$routes->get('admin/dashboard', 'Admin\DashboardController::index');
-$routes->get('admin', 'Admin\DashboardController::index');
+// Auth
+$routes->get('login', 'AuthController::login');
+$routes->post('login', 'AuthController::attempt');
+$routes->get('logout', 'AuthController::logout');
 
-$routes->group('admin/settings', function($routes){
+$routes->get('admin/dashboard', 'Admin\DashboardController::index', ['filter' => 'auth']);
+$routes->get('admin', 'Admin\DashboardController::index', ['filter' => 'auth']);
+
+$routes->group('admin/settings', ['filter' => 'auth'], function($routes){
     $routes->get('modules', 'Admin\ModulesController::index');
     $routes->post('modules/upload', 'Admin\ModulesController::upload');
     $routes->post('modules/enable/(:segment)', 'Admin\ModulesController::enable/$1');
@@ -28,6 +33,18 @@ $routes->group('admin/settings', function($routes){
     $routes->get('users/(:num)/edit', 'Admin\UsersController::edit/$1');
     $routes->post('users/(:num)', 'Admin\UsersController::update/$1');
     $routes->post('users/(:num)/toggle', 'Admin\UsersController::toggle/$1');
+});
+
+$routes->group('admin', ['filter' => 'auth'], function($routes){
+    $routes->group('registry', function($routes){
+        $routes->get('household-profiling', 'Admin\HouseholdProfilingController::index');
+        $routes->get('household-profiling/create', 'Admin\HouseholdProfilingController::create');
+        $routes->post('household-profiling', 'Admin\HouseholdProfilingController::store');
+
+        $routes->get('household-profiling/(:num)/edit', 'Admin\HouseholdProfilingController::edit/$1');
+        $routes->post('household-profiling/(:num)', 'Admin\HouseholdProfilingController::update/$1');
+        $routes->get('household-profiling/(:num)', 'Admin\HouseholdProfilingController::show/$1');
+    });
 });
 
 $enabledFile = WRITEPATH.'modules/enabled.php';

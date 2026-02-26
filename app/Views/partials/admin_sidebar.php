@@ -27,9 +27,9 @@
 
         <!-- STATIC (core) menus -->
         <li class="nav-item">
-          <a href="#" class="nav-link">
-            <i class="nav-icon fa-solid fa-house"></i>
-            <p>Households</p>
+          <a href="<?= base_url('admin/registry/household-profiling') ?>" class="nav-link">
+            <i class="nav-icon fa-solid fa-people-roof"></i>
+            <p>Household Profiling</p>
           </a>
         </li>
 
