@@ -12,30 +12,35 @@ $routes->get('login', 'AuthController::login');
 $routes->post('login', 'AuthController::attempt');
 $routes->get('logout', 'AuthController::logout');
 
-$routes->get('admin/dashboard', 'Admin\DashboardController::index', ['filter' => 'auth']);
-$routes->get('admin', 'Admin\DashboardController::index', ['filter' => 'auth']);
-
-$routes->group('admin/settings', ['filter' => 'auth'], function($routes){
-    $routes->get('modules', 'Admin\ModulesController::index');
-    $routes->post('modules/upload', 'Admin\ModulesController::upload');
-    $routes->post('modules/enable/(:segment)', 'Admin\ModulesController::enable/$1');
-    $routes->post('modules/disable/(:segment)', 'Admin\ModulesController::disable/$1');
-    $routes->post('modules/delete/(:segment)', 'Admin\ModulesController::delete/$1');
-    
-    $routes->get('locations', 'Admin\LocationsController::index');
-    $routes->get('locations/list', 'Admin\LocationsController::list');      // ?level=1&parent=PCODE
-    $routes->post('locations/toggle/(:segment)', 'Admin\LocationsController::toggle/$1');
-    $routes->post('locations/rename/(:segment)', 'Admin\LocationsController::rename/$1');
-
-    $routes->get('users', 'Admin\UsersController::index');
-    $routes->get('users/create', 'Admin\UsersController::create');
-    $routes->post('users', 'Admin\UsersController::store');
-    $routes->get('users/(:num)/edit', 'Admin\UsersController::edit/$1');
-    $routes->post('users/(:num)', 'Admin\UsersController::update/$1');
-    $routes->post('users/(:num)/toggle', 'Admin\UsersController::toggle/$1');
-});
-
+// ✅ Protect everything under admin
 $routes->group('admin', ['filter' => 'auth'], function($routes){
+
+    $routes->get('/', 'Admin\DashboardController::index');
+    $routes->get('dashboard', 'Admin\DashboardController::index');
+
+    // Settings
+    $routes->group('settings', function($routes){
+
+        $routes->get('modules', 'Admin\ModulesController::index');
+        $routes->post('modules/upload', 'Admin\ModulesController::upload');
+        $routes->post('modules/enable/(:segment)', 'Admin\ModulesController::enable/$1');
+        $routes->post('modules/disable/(:segment)', 'Admin\ModulesController::disable/$1');
+        $routes->post('modules/delete/(:segment)', 'Admin\ModulesController::delete/$1');
+
+        $routes->get('locations', 'Admin\LocationsController::index');
+        $routes->get('locations/list', 'Admin\LocationsController::list');      // ?level=1&parent=PCODE
+        $routes->post('locations/toggle/(:segment)', 'Admin\LocationsController::toggle/$1');
+        $routes->post('locations/rename/(:segment)', 'Admin\LocationsController::rename/$1');
+
+        $routes->get('users', 'Admin\UsersController::index');
+        $routes->get('users/create', 'Admin\UsersController::create');
+        $routes->post('users', 'Admin\UsersController::store');
+        $routes->get('users/(:num)/edit', 'Admin\UsersController::edit/$1');
+        $routes->post('users/(:num)', 'Admin\UsersController::update/$1');
+        $routes->post('users/(:num)/toggle', 'Admin\UsersController::toggle/$1');
+    });
+
+    // Registry
     $routes->group('registry', function($routes){
         $routes->get('household-profiling', 'Admin\HouseholdProfilingController::index');
         $routes->get('household-profiling/create', 'Admin\HouseholdProfilingController::create');
@@ -50,13 +55,10 @@ $routes->group('admin', ['filter' => 'auth'], function($routes){
 $enabledFile = WRITEPATH.'modules/enabled.php';
 
 if (is_file($enabledFile)) {
-
     $enabledModules = include $enabledFile;
 
     foreach ($enabledModules as $slug) {
-
         $routesPath = WRITEPATH."modules/{$slug}/Config/Routes.php";
-
         if (is_file($routesPath)) {
             require $routesPath;
         }

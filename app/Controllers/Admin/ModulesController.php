@@ -9,11 +9,16 @@ use ZipArchive;
 
 class ModulesController extends BaseController
 {
+
     public function index()
     {
+        $model = new ModuleModel();
+
         return view('admin/settings/modules/index', [
-            'modules'   => (new ModuleModel())->findAll(),
             'pageTitle' => 'Modules',
+            'modules' => $model->orderBy('created_at','DESC')->findAll(),
+            'currentUserName' => $this->currentUserName(),
+            'actor' => $this->actor(),
         ]);
     }
 
@@ -22,13 +27,13 @@ class ModulesController extends BaseController
         $file = $this->request->getFile('module_zip');
 
         if (!$file || !$file->isValid()) {
-            return back()->with('error', 'Invalid upload');
+            return redirect()->back()->with('error', 'Invalid upload');
         }
 
         // Basic validation (zip only)
         $ext = strtolower($file->getClientExtension());
         if ($ext !== 'zip') {
-            return back()->with('error', 'Please upload a ZIP file.');
+            return redirect()->back()->with('error', 'Please upload a ZIP file.');
         }
 
         $tmp = WRITEPATH . 'uploads/' . $file->getRandomName();
@@ -38,7 +43,7 @@ class ModulesController extends BaseController
 
         if ($zip->open($tmp) !== true) {
             @unlink($tmp);
-            return back()->with('error', 'Unable to open ZIP file.');
+            return redirect()->back()->with('error', 'Unable to open ZIP file.');
         }
 
         // Extract to temp folder
@@ -52,14 +57,14 @@ class ModulesController extends BaseController
         if (!file_exists($manifest)) {
             $this->safeDeleteDirectory($extract);
             @unlink($tmp);
-            return back()->with('error', 'module.json missing');
+            return redirect()->back()->with('error', 'module.json missing');
         }
 
         $data = json_decode(file_get_contents($manifest), true);
         if (!is_array($data) || empty($data['slug']) || empty($data['name']) || empty($data['version'])) {
             $this->safeDeleteDirectory($extract);
             @unlink($tmp);
-            return back()->with('error', 'Invalid module.json (missing required fields).');
+            return redirect()->back()->with('error', 'Invalid module.json (missing required fields).');
         }
 
         $slug = trim($data['slug']);
@@ -68,7 +73,7 @@ class ModulesController extends BaseController
         if (!preg_match('/^[a-z0-9\-_]+$/i', $slug)) {
             $this->safeDeleteDirectory($extract);
             @unlink($tmp);
-            return back()->with('error', 'Invalid module slug. Use letters/numbers/-/_.');
+            return redirect()->back()->with('error', 'Invalid module slug. Use letters/numbers/-/_.');
         }
 
         $finalPath = WRITEPATH . "modules/$slug";
@@ -77,7 +82,7 @@ class ModulesController extends BaseController
         if (is_dir($finalPath)) {
             $this->safeDeleteDirectory($extract);
             @unlink($tmp);
-            return back()->with('error', "Module '$slug' already exists.");
+            return redirect()->back()->with('error', "Module '$slug' already exists.");
         }
 
         // Move extracted module into final folder
@@ -114,7 +119,7 @@ class ModulesController extends BaseController
 
         @unlink($tmp);
 
-        return back()->with('success', 'Module installed');
+        return redirect()->back()->with('success', 'Module installed');
     }
 
     public function enable($slug)
@@ -125,7 +130,7 @@ class ModulesController extends BaseController
         service('moduleBootstrap')->runHook($slug, 'enable');
 
         service(ModuleService::class)->rebuildEnabledCache();
-        return back()->with('success', 'Module enabled');
+        return redirect()->back()->with('success', 'Module enabled');
     }
 
     public function disable($slug)
@@ -134,11 +139,11 @@ class ModulesController extends BaseController
         $module = $model->where('slug', $slug)->first();
 
         if (!$module) {
-            return back()->with('error', 'Module not found');
+            return redirect()->back()->with('error', 'Module not found');
         }
 
         if (!(int)$module['can_disable']) {
-            return back()->with('error', 'Module protected (cannot be disabled)');
+            return redirect()->back()->with('error', 'Module protected (cannot be disabled)');
         }
 
         $model->update($module['id'], ['enabled' => 0, 'updated_at' => date('Y-m-d H:i:s')]);
@@ -147,7 +152,7 @@ class ModulesController extends BaseController
         service('moduleBootstrap')->runHook($slug, 'disable');
 
         service(ModuleService::class)->rebuildEnabledCache();
-        return back()->with('success', 'Module disabled');
+        return redirect()->back()->with('success', 'Module disabled');
     }
 
     public function delete($slug)
@@ -156,11 +161,11 @@ class ModulesController extends BaseController
         $module = $model->where('slug', $slug)->first();
 
         if (!$module) {
-            return back()->with('error', 'Module not found');
+            return redirect()->back()->with('error', 'Module not found');
         }
 
         if (!(int)$module['can_delete']) {
-            return back()->with('error', 'Module protected (cannot be removed)');
+            return redirect()->back()->with('error', 'Module protected (cannot be removed)');
         }
 
         // HOOK: uninstall (must happen BEFORE deleting files)
@@ -179,7 +184,7 @@ class ModulesController extends BaseController
 
         $service->rebuildEnabledCache();
 
-        return back()->with('success', 'Module removed');
+        return redirect()->back()->with('success', 'Module removed');
     }
 
     /**

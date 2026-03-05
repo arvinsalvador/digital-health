@@ -12,14 +12,14 @@ class HouseholdProfilingController extends BaseController
     public function index()
     {
         $actor = $this->actor();
+
         $visitModel = new HhVisitModel();
+        $builder = $visitModel->orderBy('visit_date', 'DESC')->orderBy('id', 'DESC');
 
-        $builder = $visitModel->orderBy('visit_date','DESC')->orderBy('id','DESC');
-
-        // Scope filtering (works later when auth exists)
+        // Scope filtering
         if (($actor['user_type'] ?? '') === 'super_admin') {
             $visits = $builder->findAll();
-        } elseif (in_array(($actor['user_type'] ?? ''), ['admin','staff'], true)) {
+        } elseif (in_array(($actor['user_type'] ?? ''), ['admin', 'staff'], true)) {
             $visits = $builder->where('municipality_pcode', $actor['municipality_pcode'] ?? null)->findAll();
         } else {
             $visits = $builder->where('barangay_pcode', $actor['barangay_pcode'] ?? null)->findAll();
@@ -29,6 +29,7 @@ class HouseholdProfilingController extends BaseController
             'pageTitle' => 'Household Profiling',
             'visits' => $visits,
             'actor' => $actor,
+            'currentUserName' => $this->currentUserName(),
         ]);
     }
 
@@ -37,12 +38,13 @@ class HouseholdProfilingController extends BaseController
         $actor = $this->actor();
 
         return view('admin/registry/household_profiling/form', [
-            'pageTitle' => 'New Household Profiling',
+            'pageTitle' => 'New Household Visit',
             'mode' => 'create',
             'visit' => null,
             'members' => [],
+            'quarters' => [],
             'actor' => $actor,
-            'lock' => $this->locationLockForActor($actor),
+            'currentUserName' => $this->currentUserName(),
         ]);
     }
 
@@ -50,499 +52,482 @@ class HouseholdProfilingController extends BaseController
     {
         $actor = $this->actor();
 
-        $post = $this->request->getPost();
-        $members = $this->request->getPost('members'); // array
+        $visitDate = (string) $this->request->getPost('visit_date');
+        $sitio     = trim((string) $this->request->getPost('sitio'));
+        $barangay  = (string) $this->request->getPost('barangay_pcode');
+        $houseNo   = trim((string) $this->request->getPost('household_no'));
+        $respLn    = trim((string) $this->request->getPost('respondent_last_name'));
+        $respFn    = trim((string) $this->request->getPost('respondent_first_name'));
+        $respMn    = trim((string) $this->request->getPost('respondent_middle_name'));
+        $relation  = trim((string) $this->request->getPost('respondent_relation'));
+        $ethType   = (string) $this->request->getPost('ethnicity_type'); // "IP Household" | "Non-IP" (or your UI choice)
+        $tribe     = trim((string) $this->request->getPost('ethnicity_tribe'));
+        $ses       = trim((string) $this->request->getPost('socioeconomic_status'));
 
-        // Server-side validation
-        $error = $this->validateVisitAndMembers($actor, $post, $members);
-        if ($error) {
-            return back()->withInput()->with('error', $error);
+        // Enforce barangay locking for non-RHU / non-superadmin users
+        if (!in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin', 'staff'], true)) {
+            $barangay = (string)($actor['barangay_pcode'] ?? '');
         }
 
-        $visitDate = $this->toDbDate($post['visit_date']);
-        $quarter = $this->quarterFromDate($visitDate);
+        // Basic validation (adjust fields as needed)
+        if ($visitDate === '' || $sitio === '' || $barangay === '' || $respLn === '' || $respFn === '') {
+            return redirect()->back()->withInput()->with('error', 'Please fill in all required fields (Visit Date, Sitio/Purok, Barangay, Respondent Name).');
+        }
 
-        $visitPayload = [
-            'visit_date' => $visitDate,
-            'visit_quarter' => $quarter,
-            'interviewed_by_user_id' => $actor['id'] ?? null,
+        $quarterKey = $this->quarterKeyFromDate($visitDate);
 
-            'sitio_purok' => trim($post['sitio_purok']),
-            'barangay_pcode' => $post['barangay_pcode'],
-            'municipality_pcode' => $post['municipality_pcode'] ?? ($actor['municipality_pcode'] ?? null),
-
-            'household_no' => trim($post['household_no']),
-
-            'respondent_last_name' => trim($post['respondent_last_name']),
-            'respondent_first_name' => trim($post['respondent_first_name']),
-            'respondent_middle_name' => trim($post['respondent_middle_name'] ?? '') ?: null,
-            'respondent_relation' => $post['respondent_relation'],
-            'respondent_relation_other' => trim($post['respondent_relation_other'] ?? '') ?: null,
-
-            'ethnicity_mode' => $post['ethnicity_mode'],
-            'ethnicity_tribe' => trim($post['ethnicity_tribe'] ?? '') ?: null,
-
-            'socioeconomic_status' => $post['socioeconomic_status'],
-            'nhts_no' => trim($post['nhts_no'] ?? '') ?: null,
-
-            'water_source' => $post['water_source'],
-            'water_source_other' => trim($post['water_source_other'] ?? '') ?: null,
-
-            'toilet_facility' => $post['toilet_facility'],
-
-            'remarks' => trim($post['remarks'] ?? '') ?: null,
-        ];
-
-        // Enforce scope + locks server-side
-        $visitPayload = $this->applyLocationLocksToPayload($actor, $visitPayload);
-
-        $visitModel = new HhVisitModel();
-        $memberModel = new HhMemberModel();
-        $qModel = new HhMemberQuarterModel();
-
-        $db = \Config\Database::connect();
+        $db = db_connect();
         $db->transStart();
 
-        $visitId = $visitModel->insert($visitPayload, true);
+        try {
+            $visitModel = new HhVisitModel();
 
-        // Insert members + quarters
-        $year = (int) substr($visitDate, 0, 4);
+            $visitData = [
+                'visit_date' => $visitDate,
+                'quarter_key' => $quarterKey,
 
-        foreach ($members as $m) {
-            $med = $m['medical_history'] ?? [];
-            if (!is_array($med)) $med = [];
-            $medStr = implode(',', array_values(array_filter($med)));
+                'interviewed_by_user_id' => (int)($actor['id'] ?? 0),
+                'interviewed_by_name' => $this->currentUserName(),
 
-            $memberId = $memberModel->insert([
-                'visit_id' => $visitId,
-                'last_name' => trim($m['last_name']),
-                'first_name' => trim($m['first_name']),
-                'middle_name' => trim($m['middle_name'] ?? '') ?: null,
+                'sitio' => $sitio,
+                'barangay_pcode' => $barangay,
+                'municipality_pcode' => $actor['municipality_pcode'] ?? null,
+                'province_pcode' => $actor['province_pcode'] ?? null,
+                'region_pcode' => $actor['region_pcode'] ?? null,
 
-                'relationship_code' => (int)$m['relationship_code'],
-                'relationship_other' => trim($m['relationship_other'] ?? '') ?: null,
+                'household_no' => $houseNo !== '' ? $houseNo : null,
 
-                'sex' => $m['sex'],
-                'dob' => $this->toDbDate($m['dob']),
-                'civil_status' => $m['civil_status'],
+                'respondent_last_name' => $respLn,
+                'respondent_first_name' => $respFn,
+                'respondent_middle_name' => $respMn !== '' ? $respMn : null,
+                'respondent_relation' => $relation !== '' ? $relation : null,
 
-                'philhealth_id' => trim($m['philhealth_id'] ?? '') ?: null,
-                'membership_type' => trim($m['membership_type'] ?? '') ?: null,
-                'philhealth_category' => trim($m['philhealth_category'] ?? '') ?: null,
+                // Ethnicity handling
+                'ethnicity_type' => $ethType !== '' ? $ethType : null,
+                'ethnicity_tribe' => ($ethType === 'IP Household' && $tribe !== '') ? $tribe : null,
 
-                'medical_history' => $medStr ?: null,
+                'socioeconomic_status' => $ses !== '' ? $ses : null,
+            ];
 
-                'lmp_date' => !empty($m['lmp_date']) ? $this->toDbDate($m['lmp_date']) : null,
+            $visitId = (int) $visitModel->insert($visitData, true);
 
-                'educ_attainment' => trim($m['educ_attainment'] ?? '') ?: null,
-                'religion' => trim($m['religion'] ?? '') ?: null,
-
-                'remarks' => trim($m['remarks'] ?? '') ?: null,
-            ], true);
-
-            // quarters (required 1-4)
-            for ($q=1; $q<=4; $q++) {
-                $age = (int)($m["q{$q}_age"] ?? 0);
-                $class = trim((string)($m["q{$q}_class"] ?? ''));
-                $qModel->insert([
-                    'member_id' => $memberId,
-                    'year' => $year,
-                    'quarter' => $q,
-                    'age' => $age,
-                    'class_code' => $class,
-                ]);
+            // Members payload:
+            // members[0][last_name], members[0][first_name], ...
+            // members[0][quarters][2026-Q1][weight], etc.
+            $members = $this->request->getPost('members');
+            if (!is_array($members)) {
+                $members = [];
             }
+
+            $memberModel = new HhMemberModel();
+            $quarterModel = new HhMemberQuarterModel();
+
+            foreach ($members as $m) {
+                if (!is_array($m)) {
+                    continue;
+                }
+
+                $mLn = trim((string)($m['last_name'] ?? ''));
+                $mFn = trim((string)($m['first_name'] ?? ''));
+
+                // Skip empty member rows
+                if ($mLn === '' && $mFn === '') {
+                    continue;
+                }
+
+                $memberData = [
+                    'visit_id' => $visitId,
+                    'last_name' => $mLn,
+                    'first_name' => $mFn,
+                    'middle_name' => trim((string)($m['middle_name'] ?? '')) ?: null,
+                    'sex' => (string)($m['sex'] ?? null) ?: null,
+                    'birthdate' => (string)($m['birthdate'] ?? null) ?: null,
+                    'relationship_to_head' => trim((string)($m['relationship_to_head'] ?? '')) ?: null,
+                    'remarks' => trim((string)($m['remarks'] ?? '')) ?: null,
+                ];
+
+                $memberId = (int) $memberModel->insert($memberData, true);
+
+                // Quarters for this member
+                $quarters = $m['quarters'] ?? [];
+                if (is_array($quarters)) {
+                    foreach ($quarters as $qKey => $qPayload) {
+                        if (!is_array($qPayload)) {
+                            continue;
+                        }
+
+                        // Only store if at least one value is provided
+                        if (!$this->hasAnyQuarterValue($qPayload)) {
+                            continue;
+                        }
+
+                        $quarterRow = [
+                            'member_id' => $memberId,
+                            'quarter_key' => (string)$qKey,
+
+                            // Common examples (edit to match your DB columns)
+                            'weight' => $this->nullableNumber($qPayload['weight'] ?? null),
+                            'height' => $this->nullableNumber($qPayload['height'] ?? null),
+                            'bp_systolic' => $this->nullableNumber($qPayload['bp_systolic'] ?? null),
+                            'bp_diastolic' => $this->nullableNumber($qPayload['bp_diastolic'] ?? null),
+                            'notes' => trim((string)($qPayload['notes'] ?? '')) ?: null,
+                        ];
+
+                        $quarterModel->insert($quarterRow);
+                    }
+                }
+            }
+
+            $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                return redirect()->back()->withInput()->with('error', 'Failed to save visit. Please try again.');
+            }
+
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('success', 'Household visit saved successfully.');
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            log_message('error', 'HouseholdProfiling store error: {msg}', ['msg' => $e->getMessage()]);
+            return redirect()->back()->withInput()->with('error', 'An unexpected error occurred while saving. Please check logs.');
         }
-
-        $db->transComplete();
-
-        if ($db->transStatus() === false) {
-            return back()->withInput()->with('error', 'Failed to save profiling. Please try again.');
-        }
-
-        return redirect()->to(base_url('admin/registry/household-profiling'))
-            ->with('success', 'Household profiling saved.');
     }
 
-    public function edit(int $id)
+    public function edit($id)
     {
         $actor = $this->actor();
+
         $visitModel = new HhVisitModel();
         $memberModel = new HhMemberModel();
-        $qModel = new HhMemberQuarterModel();
+        $quarterModel = new HhMemberQuarterModel();
 
-        $visit = $visitModel->find($id);
+        $visit = $visitModel->find((int)$id);
         if (!$visit) {
-            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error','Record not found.');
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Visit not found.');
         }
 
+        // Scope check
         if (!$this->canAccessVisit($actor, $visit)) {
-            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error','Not allowed.');
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Access denied.');
         }
 
-        $members = $memberModel->where('visit_id', $id)->findAll();
+        $members = $memberModel->where('visit_id', (int)$id)->orderBy('id', 'ASC')->findAll();
 
-        // attach quarters (year from visit_date)
-        $year = (int)substr($visit['visit_date'], 0, 4);
-        foreach ($members as &$m) {
-            $quarters = $qModel->where('member_id', $m['id'])->where('year',$year)->findAll();
-            // map by quarter
-            $map = [];
-            foreach ($quarters as $qq) $map[(int)$qq['quarter']] = $qq;
-            for ($q=1; $q<=4; $q++) {
-                $m["q{$q}_age"] = $map[$q]['age'] ?? '';
-                $m["q{$q}_class"] = $map[$q]['class_code'] ?? '';
+        // Load quarters for members and group them: [member_id][quarter_key] => row
+        $quartersByMember = [];
+        if (!empty($members)) {
+            $memberIds = array_map(fn($m) => (int)$m['id'], $members);
+
+            $rows = $quarterModel->whereIn('member_id', $memberIds)->findAll();
+            foreach ($rows as $r) {
+                $mid = (int)$r['member_id'];
+                $qk = (string)$r['quarter_key'];
+                $quartersByMember[$mid][$qk] = $r;
             }
-            // medical history array for checkboxes
-            $m['medical_history_arr'] = !empty($m['medical_history']) ? explode(',', $m['medical_history']) : [];
         }
-        unset($m);
-
-        // Sort members for display
-        $members = $this->sortMembers($members);
 
         return view('admin/registry/household_profiling/form', [
-            'pageTitle' => 'Edit Household Profiling',
+            'pageTitle' => 'Edit Household Visit',
             'mode' => 'edit',
             'visit' => $visit,
             'members' => $members,
+            'quarters' => $quartersByMember,
             'actor' => $actor,
-            'lock' => $this->locationLockForActor($actor),
+            'currentUserName' => $this->currentUserName(),
         ]);
     }
 
-    public function update(int $id)
+    public function update($id)
     {
-        // For Phase 1 simplicity: implement update later (or you can reuse store logic with delete+reinsert members/quarters).
-        // I’m giving you a safe “replace members + quarters” update now.
-
         $actor = $this->actor();
+
         $visitModel = new HhVisitModel();
         $memberModel = new HhMemberModel();
-        $qModel = new HhMemberQuarterModel();
+        $quarterModel = new HhMemberQuarterModel();
 
-        $visit = $visitModel->find($id);
+        $visit = $visitModel->find((int)$id);
         if (!$visit) {
-            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error','Record not found.');
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Visit not found.');
         }
+
+        // Scope check
         if (!$this->canAccessVisit($actor, $visit)) {
-            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error','Not allowed.');
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Access denied.');
         }
 
-        $post = $this->request->getPost();
-        $members = $this->request->getPost('members');
+        $visitDate = (string) $this->request->getPost('visit_date');
+        $sitio     = trim((string) $this->request->getPost('sitio'));
+        $barangay  = (string) $this->request->getPost('barangay_pcode');
+        $houseNo   = trim((string) $this->request->getPost('household_no'));
 
-        $error = $this->validateVisitAndMembers($actor, $post, $members);
-        if ($error) {
-            return back()->withInput()->with('error', $error);
+        $respLn    = trim((string) $this->request->getPost('respondent_last_name'));
+        $respFn    = trim((string) $this->request->getPost('respondent_first_name'));
+        $respMn    = trim((string) $this->request->getPost('respondent_middle_name'));
+        $relation  = trim((string) $this->request->getPost('respondent_relation'));
+
+        $ethType   = (string) $this->request->getPost('ethnicity_type');
+        $tribe     = trim((string) $this->request->getPost('ethnicity_tribe'));
+        $ses       = trim((string) $this->request->getPost('socioeconomic_status'));
+
+        if (!in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin', 'staff'], true)) {
+            $barangay = (string)($actor['barangay_pcode'] ?? '');
         }
 
-        $visitDate = $this->toDbDate($post['visit_date']);
-        $quarter = $this->quarterFromDate($visitDate);
-        $year = (int)substr($visitDate,0,4);
+        if ($visitDate === '' || $sitio === '' || $barangay === '' || $respLn === '' || $respFn === '') {
+            return redirect()->back()->withInput()->with('error', 'Please fill in all required fields (Visit Date, Sitio/Purok, Barangay, Respondent Name).');
+        }
 
-        $payload = [
-            'visit_date' => $visitDate,
-            'visit_quarter' => $quarter,
+        $quarterKey = $this->quarterKeyFromDate($visitDate);
 
-            'sitio_purok' => trim($post['sitio_purok']),
-            'barangay_pcode' => $post['barangay_pcode'],
-            'municipality_pcode' => $post['municipality_pcode'] ?? ($visit['municipality_pcode'] ?? null),
-
-            'household_no' => trim($post['household_no']),
-
-            'respondent_last_name' => trim($post['respondent_last_name']),
-            'respondent_first_name' => trim($post['respondent_first_name']),
-            'respondent_middle_name' => trim($post['respondent_middle_name'] ?? '') ?: null,
-            'respondent_relation' => $post['respondent_relation'],
-            'respondent_relation_other' => trim($post['respondent_relation_other'] ?? '') ?: null,
-
-            'ethnicity_mode' => $post['ethnicity_mode'],
-            'ethnicity_tribe' => trim($post['ethnicity_tribe'] ?? '') ?: null,
-
-            'socioeconomic_status' => $post['socioeconomic_status'],
-            'nhts_no' => trim($post['nhts_no'] ?? '') ?: null,
-
-            'water_source' => $post['water_source'],
-            'water_source_other' => trim($post['water_source_other'] ?? '') ?: null,
-
-            'toilet_facility' => $post['toilet_facility'],
-            'remarks' => trim($post['remarks'] ?? '') ?: null,
-        ];
-
-        $payload = $this->applyLocationLocksToPayload($actor, $payload);
-
-        $db = \Config\Database::connect();
+        $db = db_connect();
         $db->transStart();
 
-        $visitModel->update($id, $payload);
+        try {
+            $visitUpdate = [
+                'visit_date' => $visitDate,
+                'quarter_key' => $quarterKey,
 
-        // remove old members + quarters then reinsert
-        $oldMembers = $memberModel->where('visit_id',$id)->findAll();
-        foreach ($oldMembers as $om) {
-            $qModel->where('member_id', $om['id'])->delete();
-        }
-        $memberModel->where('visit_id',$id)->delete();
+                'sitio' => $sitio,
+                'barangay_pcode' => $barangay,
 
-        foreach ($members as $m) {
-            $med = $m['medical_history'] ?? [];
-            if (!is_array($med)) $med = [];
-            $medStr = implode(',', array_values(array_filter($med)));
+                'household_no' => $houseNo !== '' ? $houseNo : null,
 
-            $memberId = $memberModel->insert([
-                'visit_id' => $id,
-                'last_name' => trim($m['last_name']),
-                'first_name' => trim($m['first_name']),
-                'middle_name' => trim($m['middle_name'] ?? '') ?: null,
+                'respondent_last_name' => $respLn,
+                'respondent_first_name' => $respFn,
+                'respondent_middle_name' => $respMn !== '' ? $respMn : null,
+                'respondent_relation' => $relation !== '' ? $relation : null,
 
-                'relationship_code' => (int)$m['relationship_code'],
-                'relationship_other' => trim($m['relationship_other'] ?? '') ?: null,
+                'ethnicity_type' => $ethType !== '' ? $ethType : null,
+                'ethnicity_tribe' => ($ethType === 'IP Household' && $tribe !== '') ? $tribe : null,
 
-                'sex' => $m['sex'],
-                'dob' => $this->toDbDate($m['dob']),
-                'civil_status' => $m['civil_status'],
-
-                'philhealth_id' => trim($m['philhealth_id'] ?? '') ?: null,
-                'membership_type' => trim($m['membership_type'] ?? '') ?: null,
-                'philhealth_category' => trim($m['philhealth_category'] ?? '') ?: null,
-
-                'medical_history' => $medStr ?: null,
-
-                'lmp_date' => !empty($m['lmp_date']) ? $this->toDbDate($m['lmp_date']) : null,
-
-                'educ_attainment' => trim($m['educ_attainment'] ?? '') ?: null,
-                'religion' => trim($m['religion'] ?? '') ?: null,
-
-                'remarks' => trim($m['remarks'] ?? '') ?: null,
-            ], true);
-
-            for ($q=1; $q<=4; $q++) {
-                $qModel->insert([
-                    'member_id' => $memberId,
-                    'year' => $year,
-                    'quarter' => $q,
-                    'age' => (int)($m["q{$q}_age"] ?? 0),
-                    'class_code' => trim((string)($m["q{$q}_class"] ?? '')),
-                ]);
-            }
-        }
-
-        $db->transComplete();
-
-        if ($db->transStatus() === false) {
-            return back()->withInput()->with('error','Failed to update profiling.');
-        }
-
-        return redirect()->to(base_url('admin/registry/household-profiling'))->with('success','Updated.');
-    }
-
-    public function show(int $id)
-    {
-        // Optional Phase 1: simple read-only page (can expand later)
-        return redirect()->to(base_url('admin/registry/household-profiling/'.$id.'/edit'));
-    }
-
-    /* =========================
-       Validation + Helpers
-    ========================= */
-
-    private function actor(): array
-    {
-        $u = session('auth_user');
-
-        // dev fallback so you can test even without auth
-        if (!$u) {
-            return [
-                'id' => null,
-                'user_type' => 'super_admin',
-                'municipality_pcode' => null,
-                'barangay_pcode' => null,
+                'socioeconomic_status' => $ses !== '' ? $ses : null,
             ];
+
+            $visitModel->update((int)$id, $visitUpdate);
+
+            // Existing members list in DB
+            $existingMembers = $memberModel->where('visit_id', (int)$id)->findAll();
+            $existingIds = array_map(fn($m) => (int)$m['id'], $existingMembers);
+
+            // Incoming members
+            $members = $this->request->getPost('members');
+            if (!is_array($members)) {
+                $members = [];
+            }
+
+            $seenIds = [];
+
+            foreach ($members as $m) {
+                if (!is_array($m)) {
+                    continue;
+                }
+
+                $memberId = (int)($m['id'] ?? 0);
+
+                $mLn = trim((string)($m['last_name'] ?? ''));
+                $mFn = trim((string)($m['first_name'] ?? ''));
+
+                // Skip empty member rows
+                if ($mLn === '' && $mFn === '') {
+                    continue;
+                }
+
+                $memberData = [
+                    'visit_id' => (int)$id,
+                    'last_name' => $mLn,
+                    'first_name' => $mFn,
+                    'middle_name' => trim((string)($m['middle_name'] ?? '')) ?: null,
+                    'sex' => (string)($m['sex'] ?? null) ?: null,
+                    'birthdate' => (string)($m['birthdate'] ?? null) ?: null,
+                    'relationship_to_head' => trim((string)($m['relationship_to_head'] ?? '')) ?: null,
+                    'remarks' => trim((string)($m['remarks'] ?? '')) ?: null,
+                ];
+
+                if ($memberId > 0 && in_array($memberId, $existingIds, true)) {
+                    $memberModel->update($memberId, $memberData);
+                    $seenIds[] = $memberId;
+                } else {
+                    $memberId = (int)$memberModel->insert($memberData, true);
+                    $seenIds[] = $memberId;
+                }
+
+                // Upsert quarters per member
+                $quarters = $m['quarters'] ?? [];
+                if (is_array($quarters)) {
+                    foreach ($quarters as $qKey => $qPayload) {
+                        if (!is_array($qPayload)) {
+                            continue;
+                        }
+
+                        // If nothing set, skip
+                        if (!$this->hasAnyQuarterValue($qPayload)) {
+                            continue;
+                        }
+
+                        $row = [
+                            'member_id' => $memberId,
+                            'quarter_key' => (string)$qKey,
+                            'weight' => $this->nullableNumber($qPayload['weight'] ?? null),
+                            'height' => $this->nullableNumber($qPayload['height'] ?? null),
+                            'bp_systolic' => $this->nullableNumber($qPayload['bp_systolic'] ?? null),
+                            'bp_diastolic' => $this->nullableNumber($qPayload['bp_diastolic'] ?? null),
+                            'notes' => trim((string)($qPayload['notes'] ?? '')) ?: null,
+                        ];
+
+                        // Check if exists
+                        $existing = $quarterModel
+                            ->where('member_id', $memberId)
+                            ->where('quarter_key', (string)$qKey)
+                            ->first();
+
+                        if ($existing) {
+                            $quarterModel->update((int)$existing['id'], $row);
+                        } else {
+                            $quarterModel->insert($row);
+                        }
+                    }
+                }
+            }
+
+            // Optional: delete removed members (and their quarters) if not present in incoming
+            // Comment out if you want to keep historical rows.
+            $toDelete = array_diff($existingIds, $seenIds);
+            if (!empty($toDelete)) {
+                $quarterModel->whereIn('member_id', $toDelete)->delete();
+                $memberModel->whereIn('id', $toDelete)->delete();
+            }
+
+            $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                return redirect()->back()->withInput()->with('error', 'Failed to update visit. Please try again.');
+            }
+
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('success', 'Household visit updated successfully.');
+        } catch (\Throwable $e) {
+            $db->transRollback();
+            log_message('error', 'HouseholdProfiling update error: {msg}', ['msg' => $e->getMessage()]);
+            return redirect()->back()->withInput()->with('error', 'An unexpected error occurred while updating. Please check logs.');
         }
-        return $u;
     }
 
-    private function locationLockForActor(array $actor): array
+    public function show($id)
     {
-        // SA: choose all
-        $lock = [
-            'barangay_locked' => false,
-            'municipality_locked' => false,
-            'barangay_pcode' => $actor['barangay_pcode'] ?? null,
-            'municipality_pcode' => $actor['municipality_pcode'] ?? null,
-        ];
+        $actor = $this->actor();
 
-        $type = $actor['user_type'] ?? '';
+        $visitModel = new HhVisitModel();
+        $memberModel = new HhMemberModel();
+        $quarterModel = new HhMemberQuarterModel();
 
-        if ($type === 'super_admin') return $lock;
-
-        // Admin/Staff can choose barangay but within their municipality (municipality locked)
-        if (in_array($type, ['admin','staff'], true)) {
-            $lock['municipality_locked'] = true;
-            $lock['barangay_locked'] = false;
-            return $lock;
+        $visit = $visitModel->find((int)$id);
+        if (!$visit) {
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Visit not found.');
         }
 
-        // Barangay roles: barangay locked
-        $lock['municipality_locked'] = true;
-        $lock['barangay_locked'] = true;
-        return $lock;
-    }
-
-    private function applyLocationLocksToPayload(array $actor, array $payload): array
-    {
-        $lock = $this->locationLockForActor($actor);
-
-        if (!empty($lock['municipality_locked'])) {
-            $payload['municipality_pcode'] = $lock['municipality_pcode'];
-        }
-        if (!empty($lock['barangay_locked'])) {
-            $payload['barangay_pcode'] = $lock['barangay_pcode'];
+        // Scope check
+        if (!$this->canAccessVisit($actor, $visit)) {
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Access denied.');
         }
 
-        // Scope enforcement: non-SA must stay in their scope
-        $type = $actor['user_type'] ?? '';
-        if ($type !== 'super_admin') {
-            if (in_array($type, ['admin','staff'], true)) {
-                if (($payload['municipality_pcode'] ?? null) !== ($actor['municipality_pcode'] ?? null)) {
-                    throw new \RuntimeException('Invalid municipality scope.');
-                }
-            } else {
-                if (($payload['barangay_pcode'] ?? null) !== ($actor['barangay_pcode'] ?? null)) {
-                    throw new \RuntimeException('Invalid barangay scope.');
-                }
+        $members = $memberModel->where('visit_id', (int)$id)->orderBy('id', 'ASC')->findAll();
+
+        $quartersByMember = [];
+        if (!empty($members)) {
+            $memberIds = array_map(fn($m) => (int)$m['id'], $members);
+
+            $rows = $quarterModel->whereIn('member_id', $memberIds)->findAll();
+            foreach ($rows as $r) {
+                $mid = (int)$r['member_id'];
+                $qk = (string)$r['quarter_key'];
+                $quartersByMember[$mid][$qk] = $r;
             }
         }
 
-        return $payload;
+        return view('admin/registry/household_profiling/show', [
+            'pageTitle' => 'Household Visit Details',
+            'visit' => $visit,
+            'members' => $members,
+            'quarters' => $quartersByMember,
+            'actor' => $actor,
+            'currentUserName' => $this->currentUserName(),
+        ]);
     }
+
+    // -------------------------
+    // Helpers
+    // -------------------------
 
     private function canAccessVisit(array $actor, array $visit): bool
     {
-        $type = $actor['user_type'] ?? '';
-        if ($type === 'super_admin') return true;
+        $type = (string)($actor['user_type'] ?? '');
 
-        if (in_array($type, ['admin','staff'], true)) {
-            return ($visit['municipality_pcode'] ?? null) === ($actor['municipality_pcode'] ?? null);
+        if ($type === 'super_admin') {
+            return true;
         }
 
-        return ($visit['barangay_pcode'] ?? null) === ($actor['barangay_pcode'] ?? null);
+        if (in_array($type, ['admin', 'staff'], true)) {
+            return (string)($visit['municipality_pcode'] ?? '') !== ''
+                && (string)($visit['municipality_pcode'] ?? '') === (string)($actor['municipality_pcode'] ?? '');
+        }
+
+        return (string)($visit['barangay_pcode'] ?? '') !== ''
+            && (string)($visit['barangay_pcode'] ?? '') === (string)($actor['barangay_pcode'] ?? '');
     }
 
-    private function validateVisitAndMembers(array $actor, array $post, $members): ?string
+    /**
+     * Produces a quarter key like "2026-Q1" from a date string.
+     * Accepts "YYYY-MM-DD" or anything strtotime() can parse.
+     */
+    private function quarterKeyFromDate(string $date): string
     {
-        // Visit date required
-        if (empty($post['visit_date']) || !$this->isMmddyyyy($post['visit_date'])) {
-            return 'Date of Visit is required (mm/dd/yyyy).';
+        $ts = strtotime($date);
+        if ($ts === false) {
+            // fallback: treat as current date
+            $ts = time();
         }
 
-        if (empty(trim($post['sitio_purok'] ?? ''))) return 'Sitio/Purok is required.';
-        if (empty(trim($post['household_no'] ?? ''))) return 'Household Number is required.';
+        $year = (int)date('Y', $ts);
+        $month = (int)date('n', $ts);
+        $q = (int)ceil($month / 3);
 
-        // Barangay required
-        if (empty($post['barangay_pcode'])) return 'Barangay is required.';
+        return $year . '-Q' . $q;
+    }
 
-        // Respondent
-        if (empty(trim($post['respondent_last_name'] ?? ''))) return 'Respondent Last Name is required.';
-        if (empty(trim($post['respondent_first_name'] ?? ''))) return 'Respondent First Name is required.';
-        if (empty($post['respondent_relation'])) return 'Respondent relationship is required.';
-        if ($post['respondent_relation'] === 'Other' && empty(trim($post['respondent_relation_other'] ?? ''))) {
-            return 'Respondent relationship "Other" must be specified.';
+    private function nullableNumber($value): ?float
+    {
+        if ($value === null) {
+            return null;
         }
-
-        // Ethnicity
-        if (empty($post['ethnicity_mode'])) return 'Ethnicity selection is required.';
-        if ($post['ethnicity_mode'] === 'tribe' && empty(trim($post['ethnicity_tribe'] ?? ''))) {
-            return 'Tribe is required when ethnicity is set to Tribe.';
+        $v = trim((string)$value);
+        if ($v === '') {
+            return null;
         }
-
-        // Socioeconomic
-        if (empty($post['socioeconomic_status'])) return 'Socioeconomic Status is required.';
-        if (str_starts_with($post['socioeconomic_status'], 'nhts') && empty(trim($post['nhts_no'] ?? ''))) {
-            return 'NHTS No. is required when Socioeconomic Status is NHTS.';
+        if (!is_numeric($v)) {
+            return null;
         }
+        return (float)$v;
+    }
 
-        // Water + toilet
-        if (empty($post['water_source'])) return 'Type of Water Source is required.';
-        if ($post['water_source'] === 'others' && empty(trim($post['water_source_other'] ?? ''))) {
-            return 'Please specify Water Source (Others).';
-        }
-        if (empty($post['toilet_facility'])) return 'Type of Toilet Facility is required.';
+    /**
+     * Checks whether quarter payload has any meaningful input.
+     * Add/remove keys based on your form and DB columns.
+     */
+    private function hasAnyQuarterValue(array $qPayload): bool
+    {
+        $keys = ['weight', 'height', 'bp_systolic', 'bp_diastolic', 'notes'];
 
-        // Members required
-        if (empty($members) || !is_array($members)) {
-            return 'At least one household member is required.';
-        }
-
-        foreach ($members as $i => $m) {
-            $row = $i + 1;
-
-            if (empty(trim($m['last_name'] ?? '')) || empty(trim($m['first_name'] ?? ''))) {
-                return "Member #{$row}: First Name and Last Name are required.";
+        foreach ($keys as $k) {
+            if (!array_key_exists($k, $qPayload)) {
+                continue;
             }
-
-            $rel = (int)($m['relationship_code'] ?? 0);
-            if ($rel < 1 || $rel > 5) return "Member #{$row}: Relationship is required.";
-            if ($rel === 5 && empty(trim($m['relationship_other'] ?? ''))) {
-                return "Member #{$row}: Relationship 'Others' must be specified.";
+            $v = $qPayload[$k];
+            if (is_string($v) && trim($v) !== '') {
+                return true;
             }
-
-            if (!in_array(($m['sex'] ?? ''), ['M','F'], true)) return "Member #{$row}: Sex is required.";
-            if (empty($m['dob']) || !$this->isMmddyyyy($m['dob'])) return "Member #{$row}: Date of Birth is required (mm/dd/yyyy).";
-
-            $cs = $m['civil_status'] ?? '';
-            if (!in_array($cs, ['M','S','W','SP','C'], true)) return "Member #{$row}: Civil Status is required.";
-
-            // quarters required
-            for ($q=1; $q<=4; $q++) {
-                $age = (int)($m["q{$q}_age"] ?? 0);
-                $class = trim((string)($m["q{$q}_class"] ?? ''));
-
-                if ($age <= 0) return "Member #{$row}: Q{$q} Age is required.";
-                if ($class === '') return "Member #{$row}: Q{$q} Class is required (auto-computed).";
+            if (is_numeric($v)) {
+                return true;
             }
         }
 
-        return null;
-    }
-
-    private function quarterFromDate(string $dbDate): int
-    {
-        $m = (int)substr($dbDate, 5, 2);
-        return (int)ceil($m / 3);
-    }
-
-    private function isMmddyyyy(string $s): bool
-    {
-        return (bool)preg_match('/^\d{2}\/\d{2}\/\d{4}$/', trim($s));
-    }
-
-    private function toDbDate(string $mmddyyyy): string
-    {
-        // mm/dd/yyyy -> yyyy-mm-dd
-        [$mm,$dd,$yy] = explode('/', $mmddyyyy);
-        return sprintf('%04d-%02d-%02d', (int)$yy, (int)$mm, (int)$dd);
-    }
-
-    private function sortMembers(array $members): array
-    {
-        // relationship rank: 1 head, 2 spouse, 3/4 child, 5 others
-        usort($members, function($a,$b){
-            $ra = (int)($a['relationship_code'] ?? 5);
-            $rb = (int)($b['relationship_code'] ?? 5);
-
-            $rankA = ($ra===1?1:($ra===2?2:(($ra===3||$ra===4)?3:4)));
-            $rankB = ($rb===1?1:($rb===2?2:(($rb===3||$rb===4)?3:4)));
-
-            if ($rankA !== $rankB) return $rankA <=> $rankB;
-
-            // within children: eldest to youngest (older DOB first -> smaller date)
-            $dobA = $a['dob'] ?? '9999-12-31';
-            $dobB = $b['dob'] ?? '9999-12-31';
-
-            return strcmp($dobA, $dobB);
-        });
-
-        return $members;
+        return false;
     }
 }

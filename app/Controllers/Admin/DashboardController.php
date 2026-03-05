@@ -11,7 +11,8 @@ class DashboardController extends BaseController
         return view('admin/dashboard', [
             'title' => 'Admin',
             'pageTitle' => 'Dashboard',
-            'currentUserName' => 'Admin',
+            'currentUserName' => $this->currentUserName(),
+            'actor' => $this->actor(),
         ]);
     }
 }
