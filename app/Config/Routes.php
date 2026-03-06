@@ -49,6 +49,8 @@ $routes->group('admin', ['filter' => 'auth'], function($routes){
         $routes->get('household-profiling/(:num)/edit', 'Admin\HouseholdProfilingController::edit/$1');
         $routes->post('household-profiling/(:num)', 'Admin\HouseholdProfilingController::update/$1');
         $routes->get('household-profiling/(:num)', 'Admin\HouseholdProfilingController::show/$1');
+
+        $routes->get('household-profiling/search-members', 'Admin\HouseholdProfilingController::searchMembers');
     });
 });
 
