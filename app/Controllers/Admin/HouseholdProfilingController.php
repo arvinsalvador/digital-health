@@ -14,17 +14,28 @@ class HouseholdProfilingController extends BaseController
     public function index()
     {
         $actor = $this->actor();
-        $visitModel = new HhVisitModel();
+        $db = \Config\Database::connect();
 
-        $builder = $visitModel->orderBy('visit_date', 'DESC')->orderBy('id', 'DESC');
+        $builder = $db->table('hh_visits v')
+            ->select(" 
+                v.*,
+                ba.name AS barangay_name,
+                mu.name AS municipality_name
+            ")
+            ->join('admin_areas ba', 'ba.pcode = v.barangay_pcode AND ba.level = 4', 'left')
+            ->join('admin_areas mu', 'mu.pcode = v.municipality_pcode AND mu.level = 3', 'left')
+            ->orderBy('v.visit_date', 'DESC')
+            ->orderBy('v.id', 'DESC');
 
         if (($actor['user_type'] ?? '') === 'super_admin') {
-            $visits = $builder->findAll();
+            // no filter
         } elseif (in_array(($actor['user_type'] ?? ''), ['admin', 'staff'], true)) {
-            $visits = $builder->where('municipality_pcode', $actor['municipality_pcode'] ?? null)->findAll();
+            $builder->where('v.municipality_pcode', $actor['municipality_pcode'] ?? null);
         } else {
-            $visits = $builder->where('barangay_pcode', $actor['barangay_pcode'] ?? null)->findAll();
+            $builder->where('v.barangay_pcode', $actor['barangay_pcode'] ?? null);
         }
+
+        $visits = $builder->get()->getResultArray();
 
         return view('admin/registry/household_profiling/index', [
             'pageTitle' => 'Household Profiling',
@@ -61,7 +72,6 @@ class HouseholdProfilingController extends BaseController
 
         $visitDate = $this->toDbDate($post['visit_date']);
         $quarter = $this->quarterFromDate($visitDate);
-        $year = (int)substr($visitDate, 0, 4);
 
         $visitPayload = [
             'visit_date' => $visitDate,
@@ -73,6 +83,10 @@ class HouseholdProfilingController extends BaseController
             'municipality_pcode' => $post['municipality_pcode'] ?? ($actor['municipality_pcode'] ?? null),
 
             'household_no' => trim($post['household_no']),
+            'household_latitude' => $this->normalizeCoordinate($post['household_latitude'] ?? null, -90, 90),
+            'household_longitude' => $this->normalizeCoordinate($post['household_longitude'] ?? null, -180, 180),
+            'household_location_source' => trim((string) ($post['household_location_source'] ?? '')) ?: null,
+            'household_location_accuracy' => $this->normalizePositiveDecimal($post['household_location_accuracy'] ?? null),
 
             'respondent_last_name' => trim($post['respondent_last_name']),
             'respondent_first_name' => trim($post['respondent_first_name']),
@@ -97,126 +111,12 @@ class HouseholdProfilingController extends BaseController
         $visitPayload = $this->applyLocationLocksToPayload($actor, $visitPayload);
 
         $visitModel = new HhVisitModel();
-        $familyModel = new HhFamilyGroupModel();
-        $groupMemberModel = new HhGroupMemberModel();
-        $qModel = new HhGroupMemberQuarterModel();
-        $hhMemberModel = new HhMemberModel(); // for linked lookup
-
         $db = \Config\Database::connect();
         $db->transStart();
 
         $visitId = $visitModel->insert($visitPayload, true);
 
-        foreach ($groups as $g) {
-            $groupId = $familyModel->insert([
-                'visit_id' => $visitId,
-                'group_name' => trim($g['group_name'] ?? '') ?: null,
-                'living_status' => $g['living_status'],
-                'notes' => trim($g['notes'] ?? '') ?: null,
-            ], true);
-
-            $members = $g['members'] ?? [];
-            if (!is_array($members)) $members = [];
-
-            foreach ($members as $m) {
-                $linkedId = !empty($m['linked_member_id']) ? (int)$m['linked_member_id'] : null;
-
-                // Medical history array -> comma
-                $med = $m['medical_history'] ?? [];
-                if (!is_array($med)) $med = [];
-                $medStr = implode(',', array_values(array_filter($med)));
-
-                // If linked, copy snapshot from hh_members when local fields not provided
-                $snapshot = [
-                    'local_last_name' => trim($m['local_last_name'] ?? ''),
-                    'local_first_name' => trim($m['local_first_name'] ?? ''),
-                    'local_middle_name' => trim($m['local_middle_name'] ?? ''),
-                    'sex' => trim($m['sex'] ?? ''),
-                    'dob' => !empty($m['dob']) ? $this->toDbDate($m['dob']) : null,
-                    'civil_status' => trim($m['civil_status'] ?? '') ?: null,
-
-                    'philhealth_id' => trim($m['philhealth_id'] ?? '') ?: null,
-                    'membership_type' => trim($m['membership_type'] ?? '') ?: null,
-                    'philhealth_category' => trim($m['philhealth_category'] ?? '') ?: null,
-
-                    'lmp_date' => !empty($m['lmp_date']) ? $this->toDbDate($m['lmp_date']) : null,
-                    'educ_attainment' => trim($m['educ_attainment'] ?? '') ?: null,
-                    'religion' => trim($m['religion'] ?? '') ?: null,
-                ];
-
-                if ($linkedId) {
-                    $linked = $hhMemberModel->find($linkedId);
-                    if ($linked) {
-                        if ($snapshot['local_last_name'] === '') $snapshot['local_last_name'] = $linked['last_name'] ?? '';
-                        if ($snapshot['local_first_name'] === '') $snapshot['local_first_name'] = $linked['first_name'] ?? '';
-                        if ($snapshot['local_middle_name'] === '') $snapshot['local_middle_name'] = $linked['middle_name'] ?? '';
-                        if (($snapshot['sex'] ?? '') === '') $snapshot['sex'] = $linked['sex'] ?? '';
-                        if (empty($snapshot['dob'])) $snapshot['dob'] = $linked['dob'] ?? null;
-
-                        // linked civil_status from hh_members is legacy codes; keep your new civil if already selected
-                        if (empty($snapshot['civil_status'])) {
-                            $snapshot['civil_status'] = $this->mapLegacyCivilStatus($linked['civil_status'] ?? null);
-                        }
-
-                        if (empty($snapshot['philhealth_id'])) $snapshot['philhealth_id'] = $linked['philhealth_id'] ?? null;
-                        if (empty($snapshot['membership_type'])) $snapshot['membership_type'] = $linked['membership_type'] ?? null;
-                        if (empty($snapshot['philhealth_category'])) $snapshot['philhealth_category'] = $linked['philhealth_category'] ?? null;
-
-                        if (empty($snapshot['educ_attainment'])) $snapshot['educ_attainment'] = $linked['educ_attainment'] ?? null;
-                        if (empty($snapshot['religion'])) $snapshot['religion'] = $linked['religion'] ?? null;
-                    }
-                }
-
-                $gmId = $groupMemberModel->insert([
-                    'family_group_id' => $groupId,
-                    'linked_member_id' => $linkedId,
-
-                    'local_last_name' => $snapshot['local_last_name'] ?: null,
-                    'local_first_name' => $snapshot['local_first_name'] ?: null,
-                    'local_middle_name' => $snapshot['local_middle_name'] ?: null,
-
-                    'relationship_code' => !empty($m['relationship_code']) ? (int)$m['relationship_code'] : null,
-                    'relationship_other' => trim($m['relationship_other'] ?? '') ?: null,
-
-                    'sex' => $snapshot['sex'] ?: null,
-                    'dob' => $snapshot['dob'],
-                    'civil_status' => $snapshot['civil_status'],
-
-                    'philhealth_id' => $snapshot['philhealth_id'],
-                    'membership_type' => $snapshot['membership_type'],
-                    'philhealth_category' => $snapshot['philhealth_category'],
-
-                    'medical_history' => $medStr ?: null,
-
-                    'lmp_date' => $snapshot['lmp_date'],
-                    'educ_attainment' => $snapshot['educ_attainment'],
-                    'religion' => $snapshot['religion'],
-
-                    'status_in_household' => trim($m['status_in_household'] ?? '') ?: null,
-                    'stay_from' => !empty($m['stay_from']) ? $this->toDbDate($m['stay_from']) : null,
-                    'stay_to' => !empty($m['stay_to']) ? $this->toDbDate($m['stay_to']) : null,
-
-                    'remarks' => trim($m['remarks'] ?? '') ?: null,
-                ], true);
-
-                // quarters are OPTIONAL now
-                for ($q = 1; $q <= 4; $q++) {
-                    $age = isset($m["q{$q}_age"]) && $m["q{$q}_age"] !== '' ? (int)$m["q{$q}_age"] : null;
-                    $class = trim((string)($m["q{$q}_class"] ?? ''));
-
-                    // only insert if there is something
-                    if ($age === null && $class === '') continue;
-
-                    $qModel->insert([
-                        'group_member_id' => $gmId,
-                        'year' => $year,
-                        'quarter' => $q,
-                        'age' => $age,
-                        'class_code' => $class ?: null,
-                    ]);
-                }
-            }
-        }
+        $this->insertGroupsForVisit($visitId, $visitDate, $groups);
 
         $db->transComplete();
 
@@ -246,17 +146,18 @@ class HouseholdProfilingController extends BaseController
         }
 
         $groups = $familyModel->where('visit_id', $id)->orderBy('id', 'ASC')->findAll();
-        $year = (int)substr($visit['visit_date'], 0, 4);
+        $year = (int) substr($visit['visit_date'], 0, 4);
 
         foreach ($groups as &$g) {
             $members = $groupMemberModel->where('family_group_id', $g['id'])->orderBy('id', 'ASC')->findAll();
             foreach ($members as &$m) {
                 $m['medical_history_arr'] = !empty($m['medical_history']) ? explode(',', $m['medical_history']) : [];
 
-                // map quarters
                 $quarters = $qModel->where('group_member_id', $m['id'])->where('year', $year)->findAll();
                 $map = [];
-                foreach ($quarters as $qq) $map[(int)$qq['quarter']] = $qq;
+                foreach ($quarters as $qq) {
+                    $map[(int) $qq['quarter']] = $qq;
+                }
 
                 for ($q = 1; $q <= 4; $q++) {
                     $m["q{$q}_age"] = $map[$q]['age'] ?? '';
@@ -316,6 +217,10 @@ class HouseholdProfilingController extends BaseController
             'municipality_pcode' => $post['municipality_pcode'] ?? ($visit['municipality_pcode'] ?? null),
 
             'household_no' => trim($post['household_no']),
+            'household_latitude' => $this->normalizeCoordinate($post['household_latitude'] ?? null, -90, 90),
+            'household_longitude' => $this->normalizeCoordinate($post['household_longitude'] ?? null, -180, 180),
+            'household_location_source' => trim((string) ($post['household_location_source'] ?? '')) ?: null,
+            'household_location_accuracy' => $this->normalizePositiveDecimal($post['household_location_accuracy'] ?? null),
 
             'respondent_last_name' => trim($post['respondent_last_name']),
             'respondent_first_name' => trim($post['respondent_first_name']),
@@ -343,7 +248,6 @@ class HouseholdProfilingController extends BaseController
 
         $visitModel->update($id, $payload);
 
-        // delete old groups -> members -> quarters
         $oldGroups = $familyModel->where('visit_id', $id)->findAll();
         foreach ($oldGroups as $og) {
             $oldMembers = $groupMemberModel->where('family_group_id', $og['id'])->findAll();
@@ -354,8 +258,6 @@ class HouseholdProfilingController extends BaseController
         }
         $familyModel->where('visit_id', $id)->delete();
 
-        // re-insert fresh using store logic (reuse by calling store is messy)
-        // We'll call the same logic as store, but inline:
         $this->insertGroupsForVisit($id, $visitDate, $groups);
 
         $db->transComplete();
@@ -379,23 +281,20 @@ class HouseholdProfilingController extends BaseController
     public function searchMembers()
     {
         $actor = $this->actor();
-        $q = trim((string)$this->request->getGet('q'));
+        $q = trim((string) $this->request->getGet('q'));
 
         if ($q === '' || strlen($q) < 2) {
             return $this->response->setJSON([]);
         }
 
-        $memberModel = new HhMemberModel();
         $db = \Config\Database::connect();
-
-        // join visits for location context
         $builder = $db->table('hh_members m')
             ->select('m.id, m.last_name, m.first_name, m.middle_name, m.sex, m.dob, v.barangay_pcode, v.municipality_pcode, v.sitio_purok, v.household_no, v.visit_date, v.id as visit_id')
             ->join('hh_visits v', 'v.id = m.visit_id', 'left')
             ->orderBy('m.last_name', 'ASC')
+            ->orderBy('m.first_name', 'ASC')
             ->limit(25);
 
-        // scope: super admin = all, admin/staff = municipality, others = municipality if known else barangay
         if (($actor['user_type'] ?? '') === 'super_admin') {
             // no filter
         } elseif (in_array(($actor['user_type'] ?? ''), ['admin', 'staff'], true)) {
@@ -410,12 +309,20 @@ class HouseholdProfilingController extends BaseController
             }
         }
 
-        // search: match "last, first" or any part
-        $builder->groupStart()
-            ->like('m.last_name', $q)
-            ->orLike('m.first_name', $q)
-            ->orLike('m.middle_name', $q)
-            ->groupEnd();
+        $qNorm = preg_replace('/\s+/', ' ', $q);
+        $parts = preg_split('/[\s,]+/', $qNorm) ?: [];
+        $parts = array_values(array_filter(array_map('trim', $parts), static fn ($v) => $v !== ''));
+
+        $builder->groupStart();
+        foreach ($parts as $part) {
+            $builder->groupStart()
+                ->like('m.last_name', $part)
+                ->orLike('m.first_name', $part)
+                ->orLike('m.middle_name', $part)
+                ->orLike('m.dob', $part)
+                ->groupEnd();
+        }
+        $builder->groupEnd();
 
         $rows = $builder->get()->getResultArray();
 
@@ -423,7 +330,7 @@ class HouseholdProfilingController extends BaseController
         foreach ($rows as $r) {
             $full = trim(($r['last_name'] ?? '') . ', ' . ($r['first_name'] ?? '') . ' ' . ($r['middle_name'] ?? ''));
             $out[] = [
-                'id' => (int)$r['id'],
+                'id' => (int) $r['id'],
                 'name' => $full,
                 'sex' => $r['sex'] ?? '',
                 'dob' => $r['dob'] ?? '',
@@ -432,25 +339,20 @@ class HouseholdProfilingController extends BaseController
                 'sitio_purok' => $r['sitio_purok'] ?? '',
                 'household_no' => $r['household_no'] ?? '',
                 'visit_date' => $r['visit_date'] ?? '',
-                'visit_id' => (int)($r['visit_id'] ?? 0),
+                'visit_id' => (int) ($r['visit_id'] ?? 0),
             ];
         }
 
         return $this->response->setJSON($out);
     }
 
-    /* =========================
-       Internal helper for update
-    ========================= */
-
     private function insertGroupsForVisit(int $visitId, string $visitDate, array $groups): void
     {
         $familyModel = new HhFamilyGroupModel();
         $groupMemberModel = new HhGroupMemberModel();
         $qModel = new HhGroupMemberQuarterModel();
-        $hhMemberModel = new HhMemberModel();
 
-        $year = (int)substr($visitDate, 0, 4);
+        $year = (int) substr($visitDate, 0, 4);
 
         foreach ($groups as $g) {
             $groupId = $familyModel->insert([
@@ -461,91 +363,56 @@ class HouseholdProfilingController extends BaseController
             ], true);
 
             $members = $g['members'] ?? [];
-            if (!is_array($members)) $members = [];
+            if (!is_array($members)) {
+                $members = [];
+            }
 
             foreach ($members as $m) {
-                $linkedId = !empty($m['linked_member_id']) ? (int)$m['linked_member_id'] : null;
-
-                $med = $m['medical_history'] ?? [];
-                if (!is_array($med)) $med = [];
-                $medStr = implode(',', array_values(array_filter($med)));
-
-                $snapshot = [
-                    'local_last_name' => trim($m['local_last_name'] ?? ''),
-                    'local_first_name' => trim($m['local_first_name'] ?? ''),
-                    'local_middle_name' => trim($m['local_middle_name'] ?? ''),
-                    'sex' => trim($m['sex'] ?? ''),
-                    'dob' => !empty($m['dob']) ? $this->toDbDate($m['dob']) : null,
-                    'civil_status' => trim($m['civil_status'] ?? '') ?: null,
-
-                    'philhealth_id' => trim($m['philhealth_id'] ?? '') ?: null,
-                    'membership_type' => trim($m['membership_type'] ?? '') ?: null,
-                    'philhealth_category' => trim($m['philhealth_category'] ?? '') ?: null,
-
-                    'lmp_date' => !empty($m['lmp_date']) ? $this->toDbDate($m['lmp_date']) : null,
-                    'educ_attainment' => trim($m['educ_attainment'] ?? '') ?: null,
-                    'religion' => trim($m['religion'] ?? '') ?: null,
-                ];
-
-                if ($linkedId) {
-                    $linked = $hhMemberModel->find($linkedId);
-                    if ($linked) {
-                        if ($snapshot['local_last_name'] === '') $snapshot['local_last_name'] = $linked['last_name'] ?? '';
-                        if ($snapshot['local_first_name'] === '') $snapshot['local_first_name'] = $linked['first_name'] ?? '';
-                        if ($snapshot['local_middle_name'] === '') $snapshot['local_middle_name'] = $linked['middle_name'] ?? '';
-                        if (($snapshot['sex'] ?? '') === '') $snapshot['sex'] = $linked['sex'] ?? '';
-                        if (empty($snapshot['dob'])) $snapshot['dob'] = $linked['dob'] ?? null;
-
-                        if (empty($snapshot['civil_status'])) {
-                            $snapshot['civil_status'] = $this->mapLegacyCivilStatus($linked['civil_status'] ?? null);
-                        }
-
-                        if (empty($snapshot['philhealth_id'])) $snapshot['philhealth_id'] = $linked['philhealth_id'] ?? null;
-                        if (empty($snapshot['membership_type'])) $snapshot['membership_type'] = $linked['membership_type'] ?? null;
-                        if (empty($snapshot['philhealth_category'])) $snapshot['philhealth_category'] = $linked['philhealth_category'] ?? null;
-
-                        if (empty($snapshot['educ_attainment'])) $snapshot['educ_attainment'] = $linked['educ_attainment'] ?? null;
-                        if (empty($snapshot['religion'])) $snapshot['religion'] = $linked['religion'] ?? null;
-                    }
-                }
+                $prepared = $this->prepareGroupMemberSnapshot($visitId, $m);
 
                 $gmId = $groupMemberModel->insert([
                     'family_group_id' => $groupId,
-                    'linked_member_id' => $linkedId,
+                    'linked_member_id' => $prepared['linked_member_id'],
 
-                    'local_last_name' => $snapshot['local_last_name'] ?: null,
-                    'local_first_name' => $snapshot['local_first_name'] ?: null,
-                    'local_middle_name' => $snapshot['local_middle_name'] ?: null,
+                    'local_last_name' => $prepared['snapshot']['local_last_name'] ?: null,
+                    'local_first_name' => $prepared['snapshot']['local_first_name'] ?: null,
+                    'local_middle_name' => $prepared['snapshot']['local_middle_name'] ?: null,
 
-                    'relationship_code' => !empty($m['relationship_code']) ? (int)$m['relationship_code'] : null,
-                    'relationship_other' => trim($m['relationship_other'] ?? '') ?: null,
+                    'relationship_code' => $prepared['relationship_code'],
+                    'relationship_other' => $prepared['relationship_other'],
 
-                    'sex' => $snapshot['sex'] ?: null,
-                    'dob' => $snapshot['dob'],
-                    'civil_status' => $snapshot['civil_status'],
+                    'sex' => $prepared['snapshot']['sex'] ?: null,
+                    'dob' => $prepared['snapshot']['dob'],
+                    'civil_status' => $prepared['snapshot']['civil_status'],
 
-                    'philhealth_id' => $snapshot['philhealth_id'],
-                    'membership_type' => $snapshot['membership_type'],
-                    'philhealth_category' => $snapshot['philhealth_category'],
+                    'philhealth_id' => $prepared['snapshot']['philhealth_id'],
+                    'membership_type' => $prepared['snapshot']['membership_type'],
+                    'philhealth_category' => $prepared['snapshot']['philhealth_category'],
 
-                    'medical_history' => $medStr ?: null,
+                    'medical_history' => $prepared['medical_history'],
 
-                    'lmp_date' => $snapshot['lmp_date'],
-                    'educ_attainment' => $snapshot['educ_attainment'],
-                    'religion' => $snapshot['religion'],
+                    'lmp_date' => $prepared['snapshot']['lmp_date'],
+                    'educ_attainment' => $prepared['snapshot']['educ_attainment'],
+                    'religion' => $prepared['snapshot']['religion'],
 
-                    'status_in_household' => trim($m['status_in_household'] ?? '') ?: null,
-                    'stay_from' => !empty($m['stay_from']) ? $this->toDbDate($m['stay_from']) : null,
-                    'stay_to' => !empty($m['stay_to']) ? $this->toDbDate($m['stay_to']) : null,
+                    'status_in_household' => $prepared['status_in_household'],
+                    'stay_from' => $prepared['stay_from'],
+                    'stay_to' => $prepared['stay_to'],
 
-                    'remarks' => trim($m['remarks'] ?? '') ?: null,
+                    'remarks' => $prepared['remarks'],
                 ], true);
 
                 for ($q = 1; $q <= 4; $q++) {
-                    $age = isset($m["q{$q}_age"]) && $m["q{$q}_age"] !== '' ? (int)$m["q{$q}_age"] : null;
-                    $class = trim((string)($m["q{$q}_class"] ?? ''));
+                    $age = isset($m["q{$q}_age"]) && $m["q{$q}_age"] !== '' ? (int) $m["q{$q}_age"] : null;
+                    $class = trim((string) ($m["q{$q}_class"] ?? ''));
 
-                    if ($age === null && $class === '') continue;
+                    if ($age === null && $class === '') {
+                        continue;
+                    }
+
+                    if ($class === '' && $age !== null) {
+                        $class = $this->classCodeFromAge($age);
+                    }
 
                     $qModel->insert([
                         'group_member_id' => $gmId,
@@ -559,26 +426,170 @@ class HouseholdProfilingController extends BaseController
         }
     }
 
-    /* =========================
-       Validation + Helpers
-    ========================= */
+    private function prepareGroupMemberSnapshot(int $visitId, array $m): array
+    {
+        $hhMemberModel = new HhMemberModel();
 
-    // private function actor(): array
-    // {
-    //     $u = session('auth_user');
+        $linkedId = !empty($m['linked_member_id']) ? (int) $m['linked_member_id'] : null;
 
-    //     if (!$u) {
-    //         return [
-    //             'id' => null,
-    //             'user_type' => 'super_admin',
-    //             'municipality_pcode' => null,
-    //             'barangay_pcode' => null,
-    //             'province_pcode' => null,
-    //         ];
-    //     }
+        $med = $m['medical_history'] ?? [];
+        if (!is_array($med)) {
+            $med = [];
+        }
+        $medStr = implode(',', array_values(array_filter($med)));
 
-    //     return is_array($u) ? $u : [];
-    // }
+        $snapshot = [
+            'local_last_name' => trim($m['local_last_name'] ?? ''),
+            'local_first_name' => trim($m['local_first_name'] ?? ''),
+            'local_middle_name' => trim($m['local_middle_name'] ?? ''),
+            'sex' => trim($m['sex'] ?? ''),
+            'dob' => !empty($m['dob']) ? $this->toDbDate($m['dob']) : null,
+            'civil_status' => trim($m['civil_status'] ?? '') ?: null,
+
+            'philhealth_id' => trim($m['philhealth_id'] ?? '') ?: null,
+            'membership_type' => trim($m['membership_type'] ?? '') ?: null,
+            'philhealth_category' => trim($m['philhealth_category'] ?? '') ?: null,
+
+            'lmp_date' => !empty($m['lmp_date']) ? $this->toDbDate($m['lmp_date']) : null,
+            'educ_attainment' => trim($m['educ_attainment'] ?? '') ?: null,
+            'religion' => trim($m['religion'] ?? '') ?: null,
+        ];
+
+        if ($linkedId) {
+            $linked = $hhMemberModel->find($linkedId);
+            if ($linked) {
+                if ($snapshot['local_last_name'] === '') {
+                    $snapshot['local_last_name'] = $linked['last_name'] ?? '';
+                }
+                if ($snapshot['local_first_name'] === '') {
+                    $snapshot['local_first_name'] = $linked['first_name'] ?? '';
+                }
+                if ($snapshot['local_middle_name'] === '') {
+                    $snapshot['local_middle_name'] = $linked['middle_name'] ?? '';
+                }
+                if (($snapshot['sex'] ?? '') === '') {
+                    $snapshot['sex'] = $linked['sex'] ?? '';
+                }
+                if (empty($snapshot['dob'])) {
+                    $snapshot['dob'] = $linked['dob'] ?? null;
+                }
+
+                if (empty($snapshot['civil_status'])) {
+                    $snapshot['civil_status'] = $this->mapLegacyCivilStatus($linked['civil_status'] ?? null);
+                }
+
+                if (empty($snapshot['philhealth_id'])) {
+                    $snapshot['philhealth_id'] = $linked['philhealth_id'] ?? null;
+                }
+                if (empty($snapshot['membership_type'])) {
+                    $snapshot['membership_type'] = $linked['membership_type'] ?? null;
+                }
+                if (empty($snapshot['philhealth_category'])) {
+                    $snapshot['philhealth_category'] = $linked['philhealth_category'] ?? null;
+                }
+
+                if (empty($snapshot['educ_attainment'])) {
+                    $snapshot['educ_attainment'] = $linked['educ_attainment'] ?? null;
+                }
+                if (empty($snapshot['religion'])) {
+                    $snapshot['religion'] = $linked['religion'] ?? null;
+                }
+            } else {
+                $linkedId = null;
+            }
+        }
+
+        if (!$linkedId) {
+            $linkedId = $this->findOrCreateLinkedMemberId($visitId, [
+                'last_name' => $snapshot['local_last_name'],
+                'first_name' => $snapshot['local_first_name'],
+                'middle_name' => $snapshot['local_middle_name'],
+                'relationship_code' => !empty($m['relationship_code']) ? (int) $m['relationship_code'] : null,
+                'relationship_other' => trim($m['relationship_other'] ?? '') ?: null,
+                'sex' => $snapshot['sex'] ?: null,
+                'dob' => $snapshot['dob'],
+                'civil_status' => $this->legacyCivilStatusCode($snapshot['civil_status']),
+                'philhealth_id' => $snapshot['philhealth_id'],
+                'membership_type' => $snapshot['membership_type'],
+                'philhealth_category' => $snapshot['philhealth_category'],
+                'medical_history' => $medStr ?: null,
+                'lmp_date' => $snapshot['lmp_date'],
+                'educ_attainment' => $snapshot['educ_attainment'],
+                'religion' => $snapshot['religion'],
+                'remarks' => trim($m['remarks'] ?? '') ?: null,
+            ]);
+        }
+
+        return [
+            'linked_member_id' => $linkedId,
+            'snapshot' => $snapshot,
+            'relationship_code' => !empty($m['relationship_code']) ? (int) $m['relationship_code'] : null,
+            'relationship_other' => trim($m['relationship_other'] ?? '') ?: null,
+            'medical_history' => $medStr ?: null,
+            'status_in_household' => trim($m['status_in_household'] ?? '') ?: null,
+            'stay_from' => !empty($m['stay_from']) ? $this->toDbDate($m['stay_from']) : null,
+            'stay_to' => !empty($m['stay_to']) ? $this->toDbDate($m['stay_to']) : null,
+            'remarks' => trim($m['remarks'] ?? '') ?: null,
+        ];
+    }
+
+    private function findOrCreateLinkedMemberId(int $visitId, array $payload): ?int
+    {
+        if (
+            empty($payload['last_name']) ||
+            empty($payload['first_name']) ||
+            empty($payload['sex']) ||
+            empty($payload['dob'])
+        ) {
+            return null;
+        }
+
+        $hhMemberModel = new HhMemberModel();
+
+        $existing = $hhMemberModel
+            ->where('last_name', $payload['last_name'])
+            ->where('first_name', $payload['first_name'])
+            ->groupStart()
+                ->where('middle_name', $payload['middle_name'] ?? null)
+                ->orGroupStart()
+                    ->where('middle_name', '')
+                    ->where('middle_name', $payload['middle_name'] ?? '')
+                ->groupEnd()
+            ->groupEnd()
+            ->where('sex', $payload['sex'])
+            ->where('dob', $payload['dob'])
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        if ($existing) {
+            return (int) $existing['id'];
+        }
+
+        $payload['visit_id'] = $visitId;
+        return $hhMemberModel->insert($payload, true);
+    }
+
+    private function classCodeFromAge(int $age): ?string
+    {
+        if ($age < 0) {
+            return null;
+        }
+
+        if ($age <= 5) {
+            return 'INFANT';
+        }
+        if ($age <= 12) {
+            return 'CHILD';
+        }
+        if ($age <= 19) {
+            return 'TEEN';
+        }
+        if ($age <= 59) {
+            return 'ADULT';
+        }
+
+        return 'SENIOR';
+    }
 
     private function validateVisitAndGroups(array $actor, array $post, $groups): ?string
     {
@@ -586,6 +597,23 @@ class HouseholdProfilingController extends BaseController
         if (empty($post['sitio_purok'])) return 'Sitio/Purok is required.';
         if (empty($post['barangay_pcode'])) return 'Barangay is required.';
         if (empty($post['household_no'])) return 'Household No. is required.';
+
+        $latRaw = trim((string) ($post['household_latitude'] ?? ''));
+        $lngRaw = trim((string) ($post['household_longitude'] ?? ''));
+        $accRaw = trim((string) ($post['household_location_accuracy'] ?? ''));
+
+        if (($latRaw !== '' && $lngRaw === '') || ($latRaw === '' && $lngRaw !== '')) {
+            return 'Please provide both household latitude and longitude, or leave both blank.';
+        }
+        if ($latRaw !== '' && !$this->isValidCoordinate($latRaw, -90, 90)) {
+            return 'Household latitude must be a valid number between -90 and 90.';
+        }
+        if ($lngRaw !== '' && !$this->isValidCoordinate($lngRaw, -180, 180)) {
+            return 'Household longitude must be a valid number between -180 and 180.';
+        }
+        if ($accRaw !== '' && !$this->isValidPositiveDecimal($accRaw)) {
+            return 'Location accuracy must be zero or a positive number.';
+        }
 
         if (empty($post['respondent_last_name']) || empty($post['respondent_first_name'])) {
             return 'Respondent name is required.';
@@ -601,9 +629,6 @@ class HouseholdProfilingController extends BaseController
         }
 
         if (!isset($post['socioeconomic_status'])) return 'Socioeconomic status is required.';
-        if (in_array(($post['socioeconomic_status'] ?? ''), ['nhts', 'nhts_4ps'], true) && empty($post['nhts_no'])) {
-            // optional in your UI, but you can enforce if you want
-        }
 
         if (!isset($post['water_source'])) return 'Water source is required.';
         if (($post['water_source'] ?? '') === 'others' && empty($post['water_source_other'])) {
@@ -637,8 +662,7 @@ class HouseholdProfilingController extends BaseController
                     if (empty($m['dob'])) return 'Member DOB is required.';
                 }
 
-                // If relationship_code "Others" then require relationship_other
-                $rc = isset($m['relationship_code']) ? (int)$m['relationship_code'] : null;
+                $rc = isset($m['relationship_code']) ? (int) $m['relationship_code'] : null;
                 if ($rc === 5 && empty($m['relationship_other'])) {
                     return 'Please specify relationship (Others).';
                 }
@@ -650,7 +674,6 @@ class HouseholdProfilingController extends BaseController
 
     private function toDbDate(string $dateStr): string
     {
-        // Accept YYYY-MM-DD from <input type="date">; also accept MM/DD/YYYY
         $dateStr = trim($dateStr);
 
         if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateStr)) {
@@ -670,8 +693,8 @@ class HouseholdProfilingController extends BaseController
 
     private function quarterFromDate(string $ymd): int
     {
-        $m = (int)substr($ymd, 5, 2);
-        return (int)ceil($m / 3);
+        $m = (int) substr($ymd, 5, 2);
+        return (int) ceil($m / 3);
     }
 
     private function canAccessVisit(array $actor, array $visit): bool
@@ -735,9 +758,24 @@ class HouseholdProfilingController extends BaseController
         return $payload;
     }
 
+    private function legacyCivilStatusCode(?string $civil): ?string
+    {
+        $civil = strtolower(trim((string) $civil));
+        if ($civil === '') return null;
+
+        return match ($civil) {
+            'single' => 'S',
+            'married' => 'M',
+            'widowed' => 'W',
+            'separated' => 'SP',
+            'live_in' => 'C',
+            default => null,
+        };
+    }
+
     private function mapLegacyCivilStatus(?string $legacy): ?string
     {
-        $legacy = strtoupper(trim((string)$legacy));
+        $legacy = strtoupper(trim((string) $legacy));
         if ($legacy === '') return null;
 
         return match ($legacy) {
@@ -748,5 +786,50 @@ class HouseholdProfilingController extends BaseController
             'C'  => 'live_in',
             default => null,
         };
+    }
+
+    private function isValidCoordinate(string $value, float $min, float $max): bool
+    {
+        if (!is_numeric($value)) {
+            return false;
+        }
+
+        $num = (float) $value;
+        return $num >= $min && $num <= $max;
+    }
+
+    private function normalizeCoordinate($value, float $min, float $max): ?string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+        if (!$this->isValidCoordinate($value, $min, $max)) {
+            return null;
+        }
+
+        return number_format((float) $value, 7, '.', '');
+    }
+
+    private function isValidPositiveDecimal(string $value): bool
+    {
+        if (!is_numeric($value)) {
+            return false;
+        }
+
+        return (float) $value >= 0;
+    }
+
+    private function normalizePositiveDecimal($value): ?string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+        if (!$this->isValidPositiveDecimal($value)) {
+            return null;
+        }
+
+        return number_format((float) $value, 2, '.', '');
     }
 }

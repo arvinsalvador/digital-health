@@ -20,6 +20,10 @@ $oldMunicipal = old('municipality_pcode', $visit['municipality_pcode'] ?? ($lock
 
 $oldSitio     = old('sitio_purok', $visit['sitio_purok'] ?? '');
 $oldHouseNo   = old('household_no', $visit['household_no'] ?? '');
+$oldLat       = old('household_latitude', $visit['household_latitude'] ?? '');
+$oldLng       = old('household_longitude', $visit['household_longitude'] ?? '');
+$oldLocSource = old('household_location_source', $visit['household_location_source'] ?? '');
+$oldLocAccuracy = old('household_location_accuracy', $visit['household_location_accuracy'] ?? '');
 
 $oldRespLN = old('respondent_last_name', $visit['respondent_last_name'] ?? '');
 $oldRespFN = old('respondent_first_name', $visit['respondent_first_name'] ?? '');
@@ -149,17 +153,16 @@ if (!empty($groups)) {
           <?php endif; ?>
         </div>
 
-        <div class="col-md-3">
+        <div class="col-md-2">
           <label class="form-label">Sitio / Purok</label>
           <input class="form-control" name="sitio_purok" value="<?= esc($oldSitio) ?>" required>
         </div>
 
-        <div class="col-md-3">
+        <div class="col-md-2">
           <label class="form-label">Household No.</label>
           <input class="form-control" name="household_no" value="<?= esc($oldHouseNo) ?>" required>
         </div>
-
-        <div class="col-md-6">
+        <div class="col-md-8">
           <label class="form-label">Name of Respondent</label>
           <div class="row g-2">
             <div class="col-lg-4 col-md-12">
@@ -246,6 +249,43 @@ if (!empty($groups)) {
           <label class="form-label">Remarks (optional)</label>
           <textarea class="form-control" name="remarks" rows="2"><?= esc($remarks) ?></textarea>
         </div>
+        <div class="col-md-12">
+          <label class="form-label">Household Location Map</label>
+          <div class="border rounded p-3 bg-light">
+            <div class="row g-2 mb-2">
+              <div class="col-lg-3 col-md-6">
+                <input type="text" class="form-control" name="household_latitude" id="household_latitude" value="<?= esc($oldLat) ?>" placeholder="Latitude (e.g. 9.8754321)">
+              </div>
+              <div class="col-lg-3 col-md-6">
+                <input type="text" class="form-control" name="household_longitude" id="household_longitude" value="<?= esc($oldLng) ?>" placeholder="Longitude (e.g. 125.9876543)">
+              </div>
+              <div class="col-lg-2 col-md-6">
+                <input type="text" class="form-control" name="household_location_accuracy" id="household_location_accuracy" value="<?= esc($oldLocAccuracy) ?>" placeholder="Accuracy (m)" readonly>
+              </div>
+              <div class="col-lg-4 col-md-6 d-flex gap-2 flex-wrap">
+                <button type="button" class="btn btn-outline-primary" id="btnUseCurrentLocation">
+                  <i class="fa-solid fa-location-crosshairs"></i> Use Current Location
+                </button>
+                <button type="button" class="btn btn-outline-secondary" id="btnClearLocation">
+                  <i class="fa-solid fa-eraser"></i> Clear Pin
+                </button>
+              </div>
+            </div>
+
+            <input type="hidden" name="household_location_source" id="household_location_source" value="<?= esc($oldLocSource) ?>">
+
+            <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+              <div class="small text-muted">
+                Click the map to drop a household pin, drag the marker to adjust, or use your current device location.
+              </div>
+              <span class="badge bg-secondary" id="household_location_status">
+                <?= esc($oldLocSource ?: 'No location pinned') ?>
+              </span>
+            </div>
+
+            <div id="household_map" class="household-map"></div>
+          </div>
+        </div>
       </div>
 
       <hr class="my-4">
@@ -309,6 +349,8 @@ if (!empty($groups)) {
 
 <?= $this->section('scripts') ?>
 
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+
 <style>
   .group-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
   .group-card .group-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
@@ -320,8 +362,11 @@ if (!empty($groups)) {
   .w-180 { min-width: 180px; }
   .w-220 { min-width: 220px; }
   .qCell input { min-width: 88px; }
+  .household-map { width: 100%; height: 360px; border-radius: 8px; overflow: hidden; background: #f8fafc; }
+  .leaflet-container { font: inherit; }
 </style>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 (function(){
   const isSuperAdmin = <?= json_encode($isSuperAdmin) ?>;
@@ -329,6 +374,8 @@ if (!empty($groups)) {
   const selectedMunicipality = <?= json_encode($oldMunicipal) ?>;
   const brgySelect = document.getElementById('barangay_pcode');
   const selectedBarangay = <?= json_encode($oldBarangay) ?>;
+  const initialLatitude = <?= json_encode($oldLat !== '' ? (float) $oldLat : null) ?>;
+  const initialLongitude = <?= json_encode($oldLng !== '' ? (float) $oldLng : null) ?>;
 
   function loadMunicipalities(){
     if (!isSuperAdmin) return;
@@ -428,6 +475,152 @@ if (!empty($groups)) {
   soc.addEventListener('change', toggleConditional);
   water.addEventListener('change', toggleConditional);
   toggleConditional();
+
+  const latInput = document.getElementById('household_latitude');
+  const lngInput = document.getElementById('household_longitude');
+  const accuracyInput = document.getElementById('household_location_accuracy');
+  const sourceInput = document.getElementById('household_location_source');
+  const locationStatus = document.getElementById('household_location_status');
+  const useCurrentLocationBtn = document.getElementById('btnUseCurrentLocation');
+  const clearLocationBtn = document.getElementById('btnClearLocation');
+
+  const defaultCenter = [12.8797, 121.7740];
+  const initialZoom = (initialLatitude !== null && initialLongitude !== null) ? 17 : 6;
+
+  const householdMap = L.map('household_map').setView(
+    (initialLatitude !== null && initialLongitude !== null) ? [initialLatitude, initialLongitude] : defaultCenter,
+    initialZoom
+  );
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 20,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(householdMap);
+
+  let householdMarker = null;
+
+  function setLocationStatus(text){
+    locationStatus.textContent = text || 'No location pinned';
+  }
+
+  function roundCoord(value){
+    return Number(value).toFixed(7);
+  }
+
+  function setMarker(lat, lng, source = ''){
+    if (!householdMarker) {
+      householdMarker = L.marker([lat, lng], { draggable: true }).addTo(householdMap);
+
+      householdMarker.on('dragend', () => {
+        const pos = householdMarker.getLatLng();
+        latInput.value = roundCoord(pos.lat);
+        lngInput.value = roundCoord(pos.lng);
+        sourceInput.value = 'map_drag';
+        setLocationStatus('Pinned via map drag');
+      });
+    } else {
+      householdMarker.setLatLng([lat, lng]);
+    }
+
+    latInput.value = roundCoord(lat);
+    lngInput.value = roundCoord(lng);
+
+    if (source) {
+      sourceInput.value = source;
+      if (source === 'browser_geolocation') {
+        setLocationStatus('Pinned via current device location');
+      } else if (source === 'manual_coordinates') {
+        setLocationStatus('Pinned via manual coordinates');
+      } else if (source === 'map_click') {
+        setLocationStatus('Pinned via map click');
+      } else if (source === 'saved_location') {
+        setLocationStatus('Saved household location');
+      } else {
+        setLocationStatus(source);
+      }
+    }
+
+    householdMap.setView([lat, lng], Math.max(householdMap.getZoom(), 17));
+  }
+
+  function clearMarker(){
+    if (householdMarker) {
+      householdMap.removeLayer(householdMarker);
+      householdMarker = null;
+    }
+    latInput.value = '';
+    lngInput.value = '';
+    accuracyInput.value = '';
+    sourceInput.value = '';
+    setLocationStatus('No location pinned');
+  }
+
+  function syncMarkerFromInputs(){
+    const lat = parseFloat((latInput.value || '').trim());
+    const lng = parseFloat((lngInput.value || '').trim());
+
+    if (Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+      accuracyInput.value = '';
+      setMarker(lat, lng, 'manual_coordinates');
+      return;
+    }
+
+    if ((latInput.value || '').trim() === '' && (lngInput.value || '').trim() === '') {
+      clearMarker();
+    }
+  }
+
+  householdMap.on('click', (e) => {
+    accuracyInput.value = '';
+    setMarker(e.latlng.lat, e.latlng.lng, 'map_click');
+  });
+
+  useCurrentLocationBtn.addEventListener('click', () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by this browser.');
+      return;
+    }
+
+    useCurrentLocationBtn.disabled = true;
+    useCurrentLocationBtn.innerHTML = '<i class=\"fa-solid fa-spinner fa-spin\"></i> Locating...';
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        const accuracy = position.coords.accuracy;
+
+        accuracyInput.value = Number.isFinite(accuracy) ? Number(accuracy).toFixed(2) : '';
+        setMarker(lat, lng, 'browser_geolocation');
+
+        useCurrentLocationBtn.disabled = false;
+        useCurrentLocationBtn.innerHTML = '<i class=\"fa-solid fa-location-crosshairs\"></i> Use Current Location';
+      },
+      (err) => {
+        alert(err && err.message ? err.message : 'Unable to get your current location.');
+        useCurrentLocationBtn.disabled = false;
+        useCurrentLocationBtn.innerHTML = '<i class=\"fa-solid fa-location-crosshairs\"></i> Use Current Location';
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  });
+
+  clearLocationBtn.addEventListener('click', clearMarker);
+  latInput.addEventListener('change', syncMarkerFromInputs);
+  lngInput.addEventListener('change', syncMarkerFromInputs);
+  latInput.addEventListener('blur', syncMarkerFromInputs);
+  lngInput.addEventListener('blur', syncMarkerFromInputs);
+
+  if (initialLatitude !== null && initialLongitude !== null) {
+    setMarker(initialLatitude, initialLongitude, <?= json_encode($oldLocSource ?: 'saved_location') ?>);
+    <?php if ($oldLocAccuracy !== ''): ?>
+    accuracyInput.value = <?= json_encode((string) $oldLocAccuracy) ?>;
+    <?php endif; ?>
+  } else {
+    setLocationStatus(<?= json_encode($oldLocSource ?: 'No location pinned') ?>);
+  }
+
+  setTimeout(() => householdMap.invalidateSize(), 200);
 
   const seedGroups = <?= json_encode($seedGroups) ?>;
   const groupsWrap = document.getElementById('groupsWrap');

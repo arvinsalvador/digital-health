@@ -38,7 +38,10 @@
           <td><?= esc(date('m/d/Y', strtotime($v['visit_date']))) ?></td>
           <td><span class="badge bg-info">Q<?= (int)$v['visit_quarter'] ?></span></td>
           <td><?= esc($v['household_no']) ?></td>
-          <td><code><?= esc($v['barangay_pcode']) ?></code></td>
+          <td>
+            <?= esc(($v['municipality_name'] ?? '') ?: '—') ?> - <?= esc(($v['barangay_name'] ?? '') ?: '—') ?>
+            <span class="text-muted">(<?= esc($v['barangay_pcode']) ?>)</span>
+          </td>
           <td><?= esc($v['respondent_last_name'].', '.$v['respondent_first_name']) ?></td>
           <td class="d-flex gap-2">
             <a class="btn btn-sm btn-outline-primary" href="<?= base_url('admin/registry/household-profiling/'.$v['id'].'/edit') ?>">Edit</a>
