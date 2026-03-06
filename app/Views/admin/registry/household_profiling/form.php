@@ -6,96 +6,99 @@
 <?php endif; ?>
 
 <?php
-$mode  = $mode ?? 'create';
-$visit = $visit ?? null;
-$groups = $groups ?? [];
-$actor = $actor ?? [];
-$lock  = $lock ?? ['municipality_locked'=>false,'barangay_locked'=>false,'municipality_pcode'=>'','barangay_pcode'=>''];
+  $mode  = $mode ?? 'create';
+  $visit = $visit ?? null;
+  $groups = $groups ?? [];
+  $actor = $actor ?? [];
+  $lock  = $lock ?? ['municipality_locked'=>false,'barangay_locked'=>false,'municipality_pcode'=>'','barangay_pcode'=>''];
 
-$oldVisitDate = old('visit_date', $visit['visit_date'] ?? '');
-$oldQuarter   = old('visit_quarter', !empty($visit['visit_quarter']) ? ('Q'.$visit['visit_quarter']) : '');
+  $displayVisitDate = $mode === 'create'
+    ? date('Y-m-d')
+    : ($visit['last_visit_date'] ?? $visit['visit_date'] ?? date('Y-m-d'));
 
-$oldBarangay  = old('barangay_pcode', $visit['barangay_pcode'] ?? ($lock['barangay_pcode'] ?? ''));
-$oldMunicipal = old('municipality_pcode', $visit['municipality_pcode'] ?? ($lock['municipality_pcode'] ?? ''));
+  $oldVisitDate = old('visit_date', $displayVisitDate);
+  $oldQuarter   = old('visit_quarter', !empty($visit['visit_quarter']) ? ('Q'.$visit['visit_quarter']) : '');
 
-$oldSitio     = old('sitio_purok', $visit['sitio_purok'] ?? '');
-$oldHouseNo   = old('household_no', $visit['household_no'] ?? '');
-$oldLat       = old('household_latitude', $visit['household_latitude'] ?? '');
-$oldLng       = old('household_longitude', $visit['household_longitude'] ?? '');
-$oldLocSource = old('household_location_source', $visit['household_location_source'] ?? '');
-$oldLocAccuracy = old('household_location_accuracy', $visit['household_location_accuracy'] ?? '');
+  $oldBarangay  = old('barangay_pcode', $visit['barangay_pcode'] ?? ($lock['barangay_pcode'] ?? ''));
+  $oldMunicipal = old('municipality_pcode', $visit['municipality_pcode'] ?? ($lock['municipality_pcode'] ?? ''));
 
-$oldRespLN = old('respondent_last_name', $visit['respondent_last_name'] ?? '');
-$oldRespFN = old('respondent_first_name', $visit['respondent_first_name'] ?? '');
-$oldRespMN = old('respondent_middle_name', $visit['respondent_middle_name'] ?? '');
-$oldRespRel = old('respondent_relation', $visit['respondent_relation'] ?? '');
-$oldRespRelOther = old('respondent_relation_other', $visit['respondent_relation_other'] ?? '');
+  $oldSitio     = old('sitio_purok', $visit['sitio_purok'] ?? '');
+  $oldHouseNo   = old('household_no', $visit['household_no'] ?? '');
+  $oldLat       = old('household_latitude', $visit['household_latitude'] ?? '');
+  $oldLng       = old('household_longitude', $visit['household_longitude'] ?? '');
+  $oldLocSource = old('household_location_source', $visit['geo_source'] ?? '');
+  $oldLocAccuracy = old('household_location_accuracy', $visit['geo_accuracy_m'] ?? '');
 
-$ethMode = old('ethnicity_mode', $visit['ethnicity_mode'] ?? 'ip');
-$ethTribe = old('ethnicity_tribe', $visit['ethnicity_tribe'] ?? '');
+  $oldRespLN = old('respondent_last_name', $visit['respondent_last_name'] ?? '');
+  $oldRespFN = old('respondent_first_name', $visit['respondent_first_name'] ?? '');
+  $oldRespMN = old('respondent_middle_name', $visit['respondent_middle_name'] ?? '');
+  $oldRespRel = old('respondent_relation', $visit['respondent_relation'] ?? '');
+  $oldRespRelOther = old('respondent_relation_other', $visit['respondent_relation_other'] ?? '');
 
-$socio = old('socioeconomic_status', $visit['socioeconomic_status'] ?? '');
-$nhtsNo = old('nhts_no', $visit['nhts_no'] ?? '');
+  $ethMode = old('ethnicity_mode', $visit['ethnicity_mode'] ?? 'ip');
+  $ethTribe = old('ethnicity_tribe', $visit['ethnicity_tribe'] ?? '');
 
-$water = old('water_source', $visit['water_source'] ?? '');
-$waterOther = old('water_source_other', $visit['water_source_other'] ?? '');
+  $socio = old('socioeconomic_status', $visit['socioeconomic_status'] ?? '');
+  $nhtsNo = old('nhts_no', $visit['nhts_no'] ?? '');
 
-$toilet = old('toilet_facility', $visit['toilet_facility'] ?? '');
-$remarks = old('remarks', $visit['remarks'] ?? '');
+  $water = old('water_source', $visit['water_source'] ?? '');
+  $waterOther = old('water_source_other', $visit['water_source_other'] ?? '');
 
-$actorType = (string)($actor['user_type'] ?? '');
-$isSuperAdmin = ($actorType === 'super_admin');
-$lockedMunicipality = (string)($actor['municipality_pcode'] ?? $oldMunicipal);
+  $toilet = old('toilet_facility', $visit['toilet_facility'] ?? '');
+  $remarks = old('remarks', $visit['remarks'] ?? '');
 
-// Seed groups for JS
-$seedGroups = [];
-if (!empty($groups)) {
-    foreach ($groups as $g) {
-        $seedMembers = [];
+  $actorType = (string)($actor['user_type'] ?? '');
+  $isSuperAdmin = ($actorType === 'super_admin');
+  $lockedMunicipality = (string)($actor['municipality_pcode'] ?? $oldMunicipal);
 
-        foreach (($g['members'] ?? []) as $m) {
-            $seedMembers[] = [
-                'id' => $m['id'] ?? '',
-                'linked_member_id' => $m['linked_member_id'] ?? '',
-                'local_last_name' => $m['local_last_name'] ?? '',
-                'local_first_name' => $m['local_first_name'] ?? '',
-                'local_middle_name' => $m['local_middle_name'] ?? '',
-                'relationship_code' => $m['relationship_code'] ?? '',
-                'relationship_other' => $m['relationship_other'] ?? '',
-                'sex' => $m['sex'] ?? '',
-                'dob' => $m['dob'] ?? '',
-                'civil_status' => $m['civil_status'] ?? '',
-                'philhealth_id' => $m['philhealth_id'] ?? '',
-                'membership_type' => $m['membership_type'] ?? '',
-                'philhealth_category' => $m['philhealth_category'] ?? '',
-                'medical_history' => $m['medical_history_arr'] ?? [],
-                'lmp_date' => $m['lmp_date'] ?? '',
-                'educ_attainment' => $m['educ_attainment'] ?? '',
-                'religion' => $m['religion'] ?? '',
-                'status_in_household' => $m['status_in_household'] ?? '',
-                'stay_from' => $m['stay_from'] ?? '',
-                'stay_to' => $m['stay_to'] ?? '',
-                'remarks' => $m['remarks'] ?? '',
-                'q1_age' => $m['q1_age'] ?? '',
-                'q1_class' => $m['q1_class'] ?? '',
-                'q2_age' => $m['q2_age'] ?? '',
-                'q2_class' => $m['q2_class'] ?? '',
-                'q3_age' => $m['q3_age'] ?? '',
-                'q3_class' => $m['q3_class'] ?? '',
-                'q4_age' => $m['q4_age'] ?? '',
-                'q4_class' => $m['q4_class'] ?? '',
-            ];
-        }
+  $seedGroups = [];
+  if (!empty($groups)) {
+      foreach ($groups as $g) {
+          $seedMembers = [];
 
-        $seedGroups[] = [
-            'id' => $g['id'] ?? '',
-            'group_name' => $g['group_name'] ?? '',
-            'living_status' => $g['living_status'] ?? '',
-            'notes' => $g['notes'] ?? '',
-            'members' => $seedMembers,
-        ];
-    }
-}
+          foreach (($g['members'] ?? []) as $m) {
+              $seedMembers[] = [
+                  'id' => $m['id'] ?? '',
+                  'linked_member_id' => $m['linked_member_id'] ?? '',
+                  'local_last_name' => $m['local_last_name'] ?? '',
+                  'local_first_name' => $m['local_first_name'] ?? '',
+                  'local_middle_name' => $m['local_middle_name'] ?? '',
+                  'relationship_code' => $m['relationship_code'] ?? '',
+                  'relationship_other' => $m['relationship_other'] ?? '',
+                  'sex' => $m['sex'] ?? '',
+                  'dob' => $m['dob'] ?? '',
+                  'civil_status' => $m['civil_status'] ?? '',
+                  'philhealth_id' => $m['philhealth_id'] ?? '',
+                  'membership_type' => $m['membership_type'] ?? '',
+                  'philhealth_category' => $m['philhealth_category'] ?? '',
+                  'medical_history' => $m['medical_history_arr'] ?? [],
+                  'lmp_date' => $m['lmp_date'] ?? '',
+                  'educ_attainment' => $m['educ_attainment'] ?? '',
+                  'religion' => $m['religion'] ?? '',
+                  'status_in_household' => $m['status_in_household'] ?? '',
+                  'stay_from' => $m['stay_from'] ?? '',
+                  'stay_to' => $m['stay_to'] ?? '',
+                  'remarks' => $m['remarks'] ?? '',
+                  'q1_age' => $m['q1_age'] ?? '',
+                  'q1_class' => $m['q1_class'] ?? '',
+                  'q2_age' => $m['q2_age'] ?? '',
+                  'q2_class' => $m['q2_class'] ?? '',
+                  'q3_age' => $m['q3_age'] ?? '',
+                  'q3_class' => $m['q3_class'] ?? '',
+                  'q4_age' => $m['q4_age'] ?? '',
+                  'q4_class' => $m['q4_class'] ?? '',
+              ];
+          }
+
+          $seedGroups[] = [
+              'id' => $g['id'] ?? '',
+              'group_name' => $g['group_name'] ?? '',
+              'living_status' => $g['living_status'] ?? '',
+              'notes' => $g['notes'] ?? '',
+              'members' => $seedMembers,
+          ];
+      }
+  }
 ?>
 
 <div class="card">
@@ -103,7 +106,9 @@ if (!empty($groups)) {
     <div class="d-flex justify-content-between align-items-center">
       <div>
         <strong><?= esc($pageTitle ?? 'Household Profiling') ?></strong>
-        <div class="text-muted small"><?= $mode === 'edit' ? 'Edit visit and family groups' : 'Create new visit and family groups' ?></div>
+        <div class="text-muted small">
+          <?= $mode === 'edit' ? 'Edit household profiling and family groups' : 'Create new visit and family groups' ?>
+        </div>
       </div>
       <a href="<?= base_url('admin/registry/household-profiling') ?>" class="btn btn-sm btn-outline-secondary">Back</a>
     </div>
@@ -117,7 +122,21 @@ if (!empty($groups)) {
         <div class="col-md-3">
           <label class="form-label">Date of Visit</label>
           <input type="date" class="form-control" name="visit_date" id="visit_date" value="<?= esc($oldVisitDate) ?>" required>
-          <div class="form-text">Quarter auto-detect will display on the right.</div>
+
+          <?php if ($mode === 'edit'): ?>
+            <div class="form-text">
+              Update Only = saves record changes only. Update Visit = updates latest visit date and increases Visit Count by 1.
+            </div>
+            <div class="small text-muted mt-1">
+              <strong>First Visit:</strong> <?= !empty($visit['visit_date']) ? esc(date('m/d/Y', strtotime($visit['visit_date']))) : '-' ?>
+              <br>
+              <strong>Last Visit:</strong> <?= !empty($visit['last_visit_date']) ? esc(date('m/d/Y', strtotime($visit['last_visit_date']))) : '-' ?>
+              <br>
+              <strong>Visit Count:</strong> <?= (int)($visit['visit_count'] ?? 1) ?>
+            </div>
+          <?php else: ?>
+            <div class="form-text">Auto-filled with today, but you may change it.</div>
+          <?php endif; ?>
         </div>
 
         <div class="col-md-1">
@@ -162,6 +181,7 @@ if (!empty($groups)) {
           <label class="form-label">Household No.</label>
           <input class="form-control" name="household_no" value="<?= esc($oldHouseNo) ?>" required>
         </div>
+
         <div class="col-md-8">
           <label class="form-label">Name of Respondent</label>
           <div class="row g-2">
@@ -249,6 +269,7 @@ if (!empty($groups)) {
           <label class="form-label">Remarks (optional)</label>
           <textarea class="form-control" name="remarks" rows="2"><?= esc($remarks) ?></textarea>
         </div>
+
         <div class="col-md-12">
           <label class="form-label">Household Location Map</label>
           <div class="border rounded p-3 bg-light">
@@ -301,7 +322,19 @@ if (!empty($groups)) {
 
       <div class="d-flex justify-content-end gap-2 mt-3">
         <a class="btn btn-outline-secondary" href="<?= base_url('admin/registry/household-profiling') ?>">Cancel</a>
-        <button class="btn btn-primary"><?= $mode === 'edit' ? 'Update Visit' : 'Save Visit' ?></button>
+
+        <?php if ($mode === 'edit'): ?>
+          <button type="submit" name="submit_action" value="update_only" class="btn btn-outline-secondary">
+            Update Only
+          </button>
+          <button type="submit" name="submit_action" value="update_visit" class="btn btn-primary">
+            Update Visit
+          </button>
+        <?php else: ?>
+          <button type="submit" class="btn btn-primary">
+            Save Visit
+          </button>
+        <?php endif; ?>
       </div>
     </form>
   </div>
@@ -582,7 +615,7 @@ if (!empty($groups)) {
     }
 
     useCurrentLocationBtn.disabled = true;
-    useCurrentLocationBtn.innerHTML = '<i class=\"fa-solid fa-spinner fa-spin\"></i> Locating...';
+    useCurrentLocationBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Locating...';
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
@@ -594,12 +627,12 @@ if (!empty($groups)) {
         setMarker(lat, lng, 'browser_geolocation');
 
         useCurrentLocationBtn.disabled = false;
-        useCurrentLocationBtn.innerHTML = '<i class=\"fa-solid fa-location-crosshairs\"></i> Use Current Location';
+        useCurrentLocationBtn.innerHTML = '<i class="fa-solid fa-location-crosshairs"></i> Use Current Location';
       },
       (err) => {
         alert(err && err.message ? err.message : 'Unable to get your current location.');
         useCurrentLocationBtn.disabled = false;
-        useCurrentLocationBtn.innerHTML = '<i class=\"fa-solid fa-location-crosshairs\"></i> Use Current Location';
+        useCurrentLocationBtn.innerHTML = '<i class="fa-solid fa-location-crosshairs"></i> Use Current Location';
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );

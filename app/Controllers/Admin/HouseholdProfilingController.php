@@ -4,7 +4,7 @@ namespace App\Controllers\Admin;
 
 use App\Controllers\BaseController;
 use App\Models\HhVisitModel;
-use App\Models\HhMemberModel;
+use App\Models\HhMemberModel; // existing table used for "link existing"
 use App\Models\HhFamilyGroupModel;
 use App\Models\HhGroupMemberModel;
 use App\Models\HhGroupMemberQuarterModel;
@@ -15,49 +15,32 @@ class HouseholdProfilingController extends BaseController
     {
         $actor = $this->actor();
         $db = \Config\Database::connect();
-        $q = trim((string) $this->request->getGet('q'));
 
         $builder = $db->table('hh_visits v')
-            ->select(" 
+            ->select("
                 v.*,
                 ba.name AS barangay_name,
                 mu.name AS municipality_name
             ")
             ->join('admin_areas ba', "ba.pcode = v.barangay_pcode AND ba.level = 4", 'left')
-            ->join('admin_areas mu', "mu.pcode = v.municipality_pcode AND mu.level = 3", 'left');
+            ->join('admin_areas mu', "mu.pcode = v.municipality_pcode AND mu.level = 3", 'left')
+            ->orderBy('v.visit_date', 'DESC')
+            ->orderBy('v.id', 'DESC');
 
         if (($actor['user_type'] ?? '') === 'super_admin') {
-            // no scope restriction
+            // no extra filter
         } elseif (in_array(($actor['user_type'] ?? ''), ['admin', 'staff'], true)) {
             $builder->where('v.municipality_pcode', $actor['municipality_pcode'] ?? null);
         } else {
             $builder->where('v.barangay_pcode', $actor['barangay_pcode'] ?? null);
         }
 
-        if ($q !== '') {
-            $builder->groupStart()
-                ->like('v.household_no', $q)
-                ->orLike('v.respondent_last_name', $q)
-                ->orLike('v.respondent_first_name', $q)
-                ->orLike('v.respondent_middle_name', $q)
-                ->orLike('v.sitio_purok', $q)
-                ->orLike('v.barangay_pcode', $q)
-                ->orLike('ba.name', $q)
-                ->orLike('mu.name', $q)
-            ->groupEnd();
-        }
-
-        $visits = $builder
-            ->orderBy('v.visit_date', 'DESC')
-            ->orderBy('v.id', 'DESC')
-            ->get()
-            ->getResultArray();
+        $visits = $builder->get()->getResultArray();
 
         return view('admin/registry/household_profiling/index', [
             'pageTitle' => 'Household Profiling',
             'visits' => $visits,
             'actor' => $actor,
-            'q' => $q,
             'canDelete' => in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin'], true),
         ]);
     }
@@ -92,7 +75,9 @@ class HouseholdProfilingController extends BaseController
         $quarter = $this->quarterFromDate($visitDate);
 
         $visitPayload = [
-            'visit_date' => $visitDate,
+            'visit_date' => $visitDate,              // first/original visit
+            'last_visit_date' => $visitDate,         // same on first save
+            'visit_count' => 1,                      // first visit
             'visit_quarter' => $quarter,
             'interviewed_by_user_id' => $actor['id'] ?? null,
 
@@ -101,6 +86,11 @@ class HouseholdProfilingController extends BaseController
             'municipality_pcode' => $post['municipality_pcode'] ?? ($actor['municipality_pcode'] ?? null),
 
             'household_no' => trim($post['household_no']),
+
+            'household_latitude' => trim($post['household_latitude'] ?? '') !== '' ? (float) $post['household_latitude'] : null,
+            'household_longitude' => trim($post['household_longitude'] ?? '') !== '' ? (float) $post['household_longitude'] : null,
+            'geo_source' => trim($post['household_location_source'] ?? '') ?: null,
+            'geo_accuracy_m' => trim($post['household_location_accuracy'] ?? '') !== '' ? (float) $post['household_location_accuracy'] : null,
 
             'respondent_last_name' => trim($post['respondent_last_name']),
             'respondent_first_name' => trim($post['respondent_first_name']),
@@ -118,6 +108,7 @@ class HouseholdProfilingController extends BaseController
             'water_source_other' => trim($post['water_source_other'] ?? '') ?: null,
 
             'toilet_facility' => $post['toilet_facility'],
+
             'remarks' => trim($post['remarks'] ?? '') ?: null,
         ];
 
@@ -128,11 +119,15 @@ class HouseholdProfilingController extends BaseController
         $db->transStart();
 
         $visitId = $visitModel->insert($visitPayload, true);
+
         $this->insertGroupsForVisit($visitId, $visitDate, $groups);
 
         $db->transComplete();
 
         if ($db->transStatus() === false) {
+            log_message('error', 'Failed to save profiling. DB Error: ' . json_encode($db->error()));
+            log_message('error', 'Failed to save profiling payload: ' . json_encode($visitPayload));
+
             return redirect()->back()->withInput()->with('error', 'Failed to save profiling. Please try again.');
         }
 
@@ -150,10 +145,10 @@ class HouseholdProfilingController extends BaseController
         $qModel = new HhGroupMemberQuarterModel();
 
         $visit = $visitModel->find($id);
-        if (!$visit) {
+        if (! $visit) {
             return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Record not found.');
         }
-        if (!$this->canAccessVisit($actor, $visit)) {
+        if (! $this->canAccessVisit($actor, $visit)) {
             return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Not allowed.');
         }
 
@@ -163,7 +158,7 @@ class HouseholdProfilingController extends BaseController
         foreach ($groups as &$g) {
             $members = $groupMemberModel->where('family_group_id', $g['id'])->orderBy('id', 'ASC')->findAll();
             foreach ($members as &$m) {
-                $m['medical_history_arr'] = !empty($m['medical_history']) ? explode(',', $m['medical_history']) : [];
+                $m['medical_history_arr'] = ! empty($m['medical_history']) ? explode(',', $m['medical_history']) : [];
 
                 $quarters = $qModel->where('group_member_id', $m['id'])->where('year', $year)->findAll();
                 $map = [];
@@ -202,10 +197,10 @@ class HouseholdProfilingController extends BaseController
         $qModel = new HhGroupMemberQuarterModel();
 
         $visit = $visitModel->find($id);
-        if (!$visit) {
+        if (! $visit) {
             return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Record not found.');
         }
-        if (!$this->canAccessVisit($actor, $visit)) {
+        if (! $this->canAccessVisit($actor, $visit)) {
             return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Not allowed.');
         }
 
@@ -217,18 +212,24 @@ class HouseholdProfilingController extends BaseController
             return redirect()->back()->withInput()->with('error', $error);
         }
 
-        $visitDate = $this->toDbDate($post['visit_date']);
-        $quarter = $this->quarterFromDate($visitDate);
+        $submitAction = trim((string) ($post['submit_action'] ?? 'update_visit'));
+        if (! in_array($submitAction, ['update_only', 'update_visit'], true)) {
+            $submitAction = 'update_visit';
+        }
+
+        $submittedVisitDate = $this->toDbDate($post['visit_date']);
 
         $payload = [
-            'visit_date' => $visitDate,
-            'visit_quarter' => $quarter,
-
             'sitio_purok' => trim($post['sitio_purok']),
             'barangay_pcode' => $post['barangay_pcode'],
             'municipality_pcode' => $post['municipality_pcode'] ?? ($visit['municipality_pcode'] ?? null),
 
             'household_no' => trim($post['household_no']),
+
+            'household_latitude' => trim($post['household_latitude'] ?? '') !== '' ? (float) $post['household_latitude'] : null,
+            'household_longitude' => trim($post['household_longitude'] ?? '') !== '' ? (float) $post['household_longitude'] : null,
+            'geo_source' => trim($post['household_location_source'] ?? '') ?: null,
+            'geo_accuracy_m' => trim($post['household_location_accuracy'] ?? '') !== '' ? (float) $post['household_location_accuracy'] : null,
 
             'respondent_last_name' => trim($post['respondent_last_name']),
             'respondent_first_name' => trim($post['respondent_first_name']),
@@ -249,6 +250,14 @@ class HouseholdProfilingController extends BaseController
             'remarks' => trim($post['remarks'] ?? '') ?: null,
         ];
 
+        if ($submitAction === 'update_visit') {
+            $quarter = $this->quarterFromDate($submittedVisitDate);
+
+            $payload['last_visit_date'] = $submittedVisitDate;
+            $payload['visit_count'] = ((int) ($visit['visit_count'] ?? 1)) + 1;
+            $payload['visit_quarter'] = $quarter;
+        }
+
         $payload = $this->applyLocationLocksToPayload($actor, $payload);
 
         $db = \Config\Database::connect();
@@ -266,23 +275,36 @@ class HouseholdProfilingController extends BaseController
         }
         $familyModel->where('visit_id', $id)->delete();
 
-        $this->insertGroupsForVisit($id, $visitDate, $groups);
+        $effectiveDateForGroups = ($submitAction === 'update_visit')
+            ? $submittedVisitDate
+            : ($visit['visit_date'] ?? $submittedVisitDate);
+
+        $this->insertGroupsForVisit($id, $effectiveDateForGroups, $groups);
 
         $db->transComplete();
 
         if ($db->transStatus() === false) {
+            log_message('error', 'Failed to update profiling. DB Error: ' . json_encode($db->error()));
+            log_message('error', 'Failed to update profiling payload: ' . json_encode($payload));
+            log_message('error', 'Failed to update profiling submit_action: ' . $submitAction);
+
             return redirect()->back()->withInput()->with('error', 'Failed to update profiling.');
         }
 
-        return redirect()->to(base_url('admin/registry/household-profiling'))->with('success', 'Updated.');
+        $message = $submitAction === 'update_only'
+            ? 'Profiling record updated without changing visit count.'
+            : 'Visit updated successfully.';
+
+        return redirect()->to(base_url('admin/registry/household-profiling'))->with('success', $message);
     }
 
     public function delete(int $id)
     {
         $actor = $this->actor();
 
-        if (!in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin'], true)) {
-            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'You are not allowed to delete this record.');
+        if (! in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin'], true)) {
+            return redirect()->to(base_url('admin/registry/household-profiling'))
+                ->with('error', 'You are not allowed to delete profiling records.');
         }
 
         $visitModel = new HhVisitModel();
@@ -291,35 +313,40 @@ class HouseholdProfilingController extends BaseController
         $qModel = new HhGroupMemberQuarterModel();
 
         $visit = $visitModel->find($id);
-        if (!$visit) {
-            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Record not found.');
+        if (! $visit) {
+            return redirect()->to(base_url('admin/registry/household-profiling'))
+                ->with('error', 'Record not found.');
         }
 
-        if (!$this->canDeleteVisit($actor, $visit)) {
-            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'You are not allowed to delete this record.');
+        if (! $this->canAccessVisit($actor, $visit)) {
+            return redirect()->to(base_url('admin/registry/household-profiling'))
+                ->with('error', 'Not allowed.');
         }
 
         $db = \Config\Database::connect();
         $db->transStart();
 
         $groups = $familyModel->where('visit_id', $id)->findAll();
-        foreach ($groups as $g) {
-            $members = $groupMemberModel->where('family_group_id', $g['id'])->findAll();
-            foreach ($members as $m) {
-                $qModel->where('group_member_id', $m['id'])->delete();
+        foreach ($groups as $group) {
+            $members = $groupMemberModel->where('family_group_id', $group['id'])->findAll();
+            foreach ($members as $member) {
+                $qModel->where('group_member_id', $member['id'])->delete();
             }
-            $groupMemberModel->where('family_group_id', $g['id'])->delete();
+            $groupMemberModel->where('family_group_id', $group['id'])->delete();
         }
+
         $familyModel->where('visit_id', $id)->delete();
         $visitModel->delete($id);
 
         $db->transComplete();
 
         if ($db->transStatus() === false) {
-            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Failed to delete household profiling.');
+            return redirect()->to(base_url('admin/registry/household-profiling'))
+                ->with('error', 'Failed to delete profiling.');
         }
 
-        return redirect()->to(base_url('admin/registry/household-profiling'))->with('success', 'Household profiling deleted successfully.');
+        return redirect()->to(base_url('admin/registry/household-profiling'))
+            ->with('success', 'Profiling record deleted.');
     }
 
     public function show(int $id)
@@ -347,20 +374,20 @@ class HouseholdProfilingController extends BaseController
         if (($actor['user_type'] ?? '') === 'super_admin') {
             // no filter
         } elseif (in_array(($actor['user_type'] ?? ''), ['admin', 'staff'], true)) {
-            if (!empty($actor['municipality_pcode'])) {
+            if (! empty($actor['municipality_pcode'])) {
                 $builder->where('v.municipality_pcode', $actor['municipality_pcode']);
             }
         } else {
-            if (!empty($actor['municipality_pcode'])) {
+            if (! empty($actor['municipality_pcode'])) {
                 $builder->where('v.municipality_pcode', $actor['municipality_pcode']);
-            } elseif (!empty($actor['barangay_pcode'])) {
+            } elseif (! empty($actor['barangay_pcode'])) {
                 $builder->where('v.barangay_pcode', $actor['barangay_pcode']);
             }
         }
 
         $qNorm = preg_replace('/\s+/', ' ', $q);
         $parts = preg_split('/[\s,]+/', $qNorm) ?: [];
-        $parts = array_values(array_filter(array_map('trim', $parts), static fn($v) => $v !== ''));
+        $parts = array_values(array_filter(array_map('trim', $parts), static fn ($v) => $v !== ''));
 
         $builder->groupStart();
         foreach ($parts as $part) {
@@ -412,7 +439,7 @@ class HouseholdProfilingController extends BaseController
             ], true);
 
             $members = $g['members'] ?? [];
-            if (!is_array($members)) {
+            if (! is_array($members)) {
                 $members = [];
             }
 
@@ -479,10 +506,10 @@ class HouseholdProfilingController extends BaseController
     {
         $hhMemberModel = new HhMemberModel();
 
-        $linkedId = !empty($m['linked_member_id']) ? (int) $m['linked_member_id'] : null;
+        $linkedId = ! empty($m['linked_member_id']) ? (int) $m['linked_member_id'] : null;
 
         $med = $m['medical_history'] ?? [];
-        if (!is_array($med)) {
+        if (! is_array($med)) {
             $med = [];
         }
         $medStr = implode(',', array_values(array_filter($med)));
@@ -492,14 +519,14 @@ class HouseholdProfilingController extends BaseController
             'local_first_name' => trim($m['local_first_name'] ?? ''),
             'local_middle_name' => trim($m['local_middle_name'] ?? ''),
             'sex' => trim($m['sex'] ?? ''),
-            'dob' => !empty($m['dob']) ? $this->toDbDate($m['dob']) : null,
+            'dob' => ! empty($m['dob']) ? $this->toDbDate($m['dob']) : null,
             'civil_status' => trim($m['civil_status'] ?? '') ?: null,
 
             'philhealth_id' => trim($m['philhealth_id'] ?? '') ?: null,
             'membership_type' => trim($m['membership_type'] ?? '') ?: null,
             'philhealth_category' => trim($m['philhealth_category'] ?? '') ?: null,
 
-            'lmp_date' => !empty($m['lmp_date']) ? $this->toDbDate($m['lmp_date']) : null,
+            'lmp_date' => ! empty($m['lmp_date']) ? $this->toDbDate($m['lmp_date']) : null,
             'educ_attainment' => trim($m['educ_attainment'] ?? '') ?: null,
             'religion' => trim($m['religion'] ?? '') ?: null,
         ];
@@ -548,12 +575,12 @@ class HouseholdProfilingController extends BaseController
             }
         }
 
-        if (!$linkedId) {
+        if (! $linkedId) {
             $linkedId = $this->findOrCreateLinkedMemberId($visitId, [
                 'last_name' => $snapshot['local_last_name'],
                 'first_name' => $snapshot['local_first_name'],
                 'middle_name' => $snapshot['local_middle_name'],
-                'relationship_code' => !empty($m['relationship_code']) ? (int) $m['relationship_code'] : null,
+                'relationship_code' => ! empty($m['relationship_code']) ? (int) $m['relationship_code'] : null,
                 'relationship_other' => trim($m['relationship_other'] ?? '') ?: null,
                 'sex' => $snapshot['sex'] ?: null,
                 'dob' => $snapshot['dob'],
@@ -572,12 +599,12 @@ class HouseholdProfilingController extends BaseController
         return [
             'linked_member_id' => $linkedId,
             'snapshot' => $snapshot,
-            'relationship_code' => !empty($m['relationship_code']) ? (int) $m['relationship_code'] : null,
+            'relationship_code' => ! empty($m['relationship_code']) ? (int) $m['relationship_code'] : null,
             'relationship_other' => trim($m['relationship_other'] ?? '') ?: null,
             'medical_history' => $medStr ?: null,
             'status_in_household' => trim($m['status_in_household'] ?? '') ?: null,
-            'stay_from' => !empty($m['stay_from']) ? $this->toDbDate($m['stay_from']) : null,
-            'stay_to' => !empty($m['stay_to']) ? $this->toDbDate($m['stay_to']) : null,
+            'stay_from' => ! empty($m['stay_from']) ? $this->toDbDate($m['stay_from']) : null,
+            'stay_to' => ! empty($m['stay_to']) ? $this->toDbDate($m['stay_to']) : null,
             'remarks' => trim($m['remarks'] ?? '') ?: null,
         ];
     }
@@ -623,6 +650,7 @@ class HouseholdProfilingController extends BaseController
         if ($age < 0) {
             return null;
         }
+
         if ($age <= 5) {
             return 'INFANT';
         }
@@ -659,14 +687,16 @@ class HouseholdProfilingController extends BaseController
             return 'Please specify tribe.';
         }
 
-        if (!isset($post['socioeconomic_status'])) return 'Socioeconomic status is required.';
-        if (!isset($post['water_source'])) return 'Water source is required.';
+        if (! isset($post['socioeconomic_status'])) return 'Socioeconomic status is required.';
+
+        if (! isset($post['water_source'])) return 'Water source is required.';
         if (($post['water_source'] ?? '') === 'others' && empty($post['water_source_other'])) {
             return 'Please specify water source.';
         }
+
         if (empty($post['toilet_facility'])) return 'Toilet type is required.';
 
-        if (!is_array($groups) || empty($groups)) {
+        if (! is_array($groups) || empty($groups)) {
             return 'Please add at least one Family Group.';
         }
 
@@ -676,14 +706,14 @@ class HouseholdProfilingController extends BaseController
             }
 
             $members = $g['members'] ?? null;
-            if (!is_array($members) || empty($members)) {
+            if (! is_array($members) || empty($members)) {
                 return 'Each Family Group must have at least one member.';
             }
 
             foreach ($members as $m) {
-                $linked = !empty($m['linked_member_id']);
+                $linked = ! empty($m['linked_member_id']);
 
-                if (!$linked) {
+                if (! $linked) {
                     if (empty($m['local_last_name']) || empty($m['local_first_name'])) {
                         return 'Member name (Last/First) is required.';
                     }
@@ -733,28 +763,10 @@ class HouseholdProfilingController extends BaseController
         if ($type === 'super_admin') return true;
 
         if (in_array($type, ['admin', 'staff'], true)) {
-            return !empty($actor['municipality_pcode'])
-                && ($visit['municipality_pcode'] ?? null) === $actor['municipality_pcode'];
+            return ! empty($actor['municipality_pcode']) && ($visit['municipality_pcode'] ?? null) === $actor['municipality_pcode'];
         }
 
-        return !empty($actor['barangay_pcode'])
-            && ($visit['barangay_pcode'] ?? null) === $actor['barangay_pcode'];
-    }
-
-    private function canDeleteVisit(array $actor, array $visit): bool
-    {
-        $type = $actor['user_type'] ?? '';
-
-        if ($type === 'super_admin') {
-            return true;
-        }
-
-        if ($type === 'admin') {
-            return !empty($actor['municipality_pcode'])
-                && ($visit['municipality_pcode'] ?? null) === $actor['municipality_pcode'];
-        }
-
-        return false;
+        return ! empty($actor['barangay_pcode']) && ($visit['barangay_pcode'] ?? null) === $actor['barangay_pcode'];
     }
 
     private function locationLockForActor(array $actor): array

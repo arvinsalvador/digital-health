@@ -46,6 +46,7 @@
         <tr>
           <th>Date of Visit</th>
           <th>Quarter</th>
+          <th>Visit Count</th>
           <th>Household #</th>
           <th>Barangay PCODE</th>
           <th>Respondent</th>
@@ -54,13 +55,20 @@
       </thead>
       <tbody>
       <?php if (empty($visits)): ?>
-        <tr><td colspan="6" class="text-center text-muted">No records found.</td></tr>
+        <tr><td colspan="7" class="text-center text-muted">No records yet.</td></tr>
       <?php endif; ?>
 
       <?php foreach ($visits as $v): ?>
         <tr>
-          <td><?= esc(date('m/d/Y', strtotime($v['visit_date']))) ?></td>
-          <td><span class="badge bg-info">Q<?= (int) $v['visit_quarter'] ?></span></td>
+          <td>
+            <div><strong>First:</strong> <?= esc(date('m/d/Y', strtotime($v['visit_date']))) ?></div>
+            <div class="small text-muted">
+              <strong>Last:</strong>
+              <?= !empty($v['last_visit_date']) ? esc(date('m/d/Y', strtotime($v['last_visit_date']))) : '-' ?>
+            </div>
+          </td>
+          <td align="center"><span class="badge bg-info">Q<?= (int) $v['visit_quarter'] ?></span></td>
+          <td align="center"><span class="badge bg-secondary"><?= (int)($v['visit_count'] ?? 1) ?></span></td>
           <td><?= esc($v['household_no']) ?></td>
           <td>
             <?= esc($v['municipality_name'] ?? '') ?> - <?= esc($v['barangay_name'] ?? '') ?>
