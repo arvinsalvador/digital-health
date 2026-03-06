@@ -4,10 +4,11 @@ namespace App\Controllers\Admin;
 
 use App\Controllers\BaseController;
 use App\Models\HhVisitModel;
-use App\Models\HhMemberModel; // existing table used for "link existing"
+use App\Models\HhMemberModel;
 use App\Models\HhFamilyGroupModel;
 use App\Models\HhGroupMemberModel;
 use App\Models\HhGroupMemberQuarterModel;
+use App\Models\HhGroupMemberMedicalHistoryModel;
 
 class HouseholdProfilingController extends BaseController
 {
@@ -75,9 +76,9 @@ class HouseholdProfilingController extends BaseController
         $quarter = $this->quarterFromDate($visitDate);
 
         $visitPayload = [
-            'visit_date' => $visitDate,              // first/original visit
-            'last_visit_date' => $visitDate,         // same on first save
-            'visit_count' => 1,                      // first visit
+            'visit_date' => $visitDate,
+            'last_visit_date' => $visitDate,
+            'visit_count' => 1,
             'visit_quarter' => $quarter,
             'interviewed_by_user_id' => $actor['id'] ?? null,
 
@@ -120,7 +121,7 @@ class HouseholdProfilingController extends BaseController
 
         $visitId = $visitModel->insert($visitPayload, true);
 
-        $this->insertGroupsForVisit($visitId, $visitDate, $groups);
+        $this->insertGroupsForVisit($visitId, $visitDate, $groups ?: [], []);
 
         $db->transComplete();
 
@@ -143,6 +144,7 @@ class HouseholdProfilingController extends BaseController
         $familyModel = new HhFamilyGroupModel();
         $groupMemberModel = new HhGroupMemberModel();
         $qModel = new HhGroupMemberQuarterModel();
+        $mhModel = new HhGroupMemberMedicalHistoryModel();
 
         $visit = $visitModel->find($id);
         if (! $visit) {
@@ -157,10 +159,21 @@ class HouseholdProfilingController extends BaseController
 
         foreach ($groups as &$g) {
             $members = $groupMemberModel->where('family_group_id', $g['id'])->orderBy('id', 'ASC')->findAll();
+
             foreach ($members as &$m) {
                 $m['medical_history_arr'] = ! empty($m['medical_history']) ? explode(',', $m['medical_history']) : [];
 
-                $quarters = $qModel->where('group_member_id', $m['id'])->where('year', $year)->findAll();
+                $m['medical_histories'] = $mhModel
+                    ->where('group_member_id', $m['id'])
+                    ->orderBy('date_diagnosed', 'DESC')
+                    ->orderBy('id', 'DESC')
+                    ->findAll();
+
+                $quarters = $qModel
+                    ->where('group_member_id', $m['id'])
+                    ->where('year', $year)
+                    ->findAll();
+
                 $map = [];
                 foreach ($quarters as $qq) {
                     $map[(int) $qq['quarter']] = $qq;
@@ -195,6 +208,7 @@ class HouseholdProfilingController extends BaseController
         $familyModel = new HhFamilyGroupModel();
         $groupMemberModel = new HhGroupMemberModel();
         $qModel = new HhGroupMemberQuarterModel();
+        $mhModel = new HhGroupMemberMedicalHistoryModel();
 
         $visit = $visitModel->find($id);
         if (! $visit) {
@@ -260,6 +274,28 @@ class HouseholdProfilingController extends BaseController
 
         $payload = $this->applyLocationLocksToPayload($actor, $payload);
 
+        // IMPORTANT: build history map BEFORE deleting old members
+        $historyMap = [];
+
+        if (is_array($groups)) {
+            foreach ($groups as $g) {
+                $members = $g['members'] ?? [];
+                if (! is_array($members)) {
+                    continue;
+                }
+
+                foreach ($members as $m) {
+                    $oldMemberId = ! empty($m['id']) ? (int) $m['id'] : 0;
+                    if ($oldMemberId > 0 && ! isset($historyMap[$oldMemberId])) {
+                        $historyMap[$oldMemberId] = $mhModel
+                            ->where('group_member_id', $oldMemberId)
+                            ->orderBy('id', 'ASC')
+                            ->findAll();
+                    }
+                }
+            }
+        }
+
         $db = \Config\Database::connect();
         $db->transStart();
 
@@ -270,16 +306,18 @@ class HouseholdProfilingController extends BaseController
             $oldMembers = $groupMemberModel->where('family_group_id', $og['id'])->findAll();
             foreach ($oldMembers as $om) {
                 $qModel->where('group_member_id', $om['id'])->delete();
+                $mhModel->where('group_member_id', $om['id'])->delete();
             }
             $groupMemberModel->where('family_group_id', $og['id'])->delete();
         }
+
         $familyModel->where('visit_id', $id)->delete();
 
         $effectiveDateForGroups = ($submitAction === 'update_visit')
             ? $submittedVisitDate
             : ($visit['visit_date'] ?? $submittedVisitDate);
 
-        $this->insertGroupsForVisit($id, $effectiveDateForGroups, $groups);
+        $this->insertGroupsForVisit($id, $effectiveDateForGroups, $groups ?: [], $historyMap);
 
         $db->transComplete();
 
@@ -311,6 +349,7 @@ class HouseholdProfilingController extends BaseController
         $familyModel = new HhFamilyGroupModel();
         $groupMemberModel = new HhGroupMemberModel();
         $qModel = new HhGroupMemberQuarterModel();
+        $mhModel = new HhGroupMemberMedicalHistoryModel();
 
         $visit = $visitModel->find($id);
         if (! $visit) {
@@ -331,6 +370,7 @@ class HouseholdProfilingController extends BaseController
             $members = $groupMemberModel->where('family_group_id', $group['id'])->findAll();
             foreach ($members as $member) {
                 $qModel->where('group_member_id', $member['id'])->delete();
+                $mhModel->where('group_member_id', $member['id'])->delete();
             }
             $groupMemberModel->where('family_group_id', $group['id'])->delete();
         }
@@ -422,11 +462,12 @@ class HouseholdProfilingController extends BaseController
         return $this->response->setJSON($out);
     }
 
-    private function insertGroupsForVisit(int $visitId, string $visitDate, array $groups): void
+    private function insertGroupsForVisit(int $visitId, string $visitDate, array $groups, array $historyMap = []): void
     {
         $familyModel = new HhFamilyGroupModel();
         $groupMemberModel = new HhGroupMemberModel();
         $qModel = new HhGroupMemberQuarterModel();
+        $mhModel = new HhGroupMemberMedicalHistoryModel();
 
         $year = (int) substr($visitDate, 0, 4);
 
@@ -445,6 +486,7 @@ class HouseholdProfilingController extends BaseController
 
             foreach ($members as $m) {
                 $prepared = $this->prepareGroupMemberSnapshot($visitId, $m);
+                $oldMemberId = ! empty($m['id']) ? (int) $m['id'] : 0;
 
                 $gmId = $groupMemberModel->insert([
                     'family_group_id' => $groupId,
@@ -465,7 +507,7 @@ class HouseholdProfilingController extends BaseController
                     'membership_type' => $prepared['snapshot']['membership_type'],
                     'philhealth_category' => $prepared['snapshot']['philhealth_category'],
 
-                    'medical_history' => $prepared['medical_history'],
+                    'medical_history' => null,
 
                     'lmp_date' => $prepared['snapshot']['lmp_date'],
                     'educ_attainment' => $prepared['snapshot']['educ_attainment'],
@@ -477,6 +519,23 @@ class HouseholdProfilingController extends BaseController
 
                     'remarks' => $prepared['remarks'],
                 ], true);
+
+                if ($oldMemberId > 0 && ! empty($historyMap[$oldMemberId])) {
+                    foreach ($historyMap[$oldMemberId] as $hist) {
+                        $conditionName = trim((string) ($hist['condition_name'] ?? ''));
+                        if ($conditionName === '') {
+                            continue;
+                        }
+
+                        $mhModel->insert([
+                            'group_member_id' => $gmId,
+                            'condition_name'  => $conditionName,
+                            'date_diagnosed'  => ! empty($hist['date_diagnosed']) ? $hist['date_diagnosed'] : null,
+                            'status'          => trim((string) ($hist['status'] ?? '')) ?: null,
+                            'remarks'         => trim((string) ($hist['remarks'] ?? '')) ?: null,
+                        ]);
+                    }
+                }
 
                 for ($q = 1; $q <= 4; $q++) {
                     $age = isset($m["q{$q}_age"]) && $m["q{$q}_age"] !== '' ? (int) $m["q{$q}_age"] : null;
@@ -507,12 +566,6 @@ class HouseholdProfilingController extends BaseController
         $hhMemberModel = new HhMemberModel();
 
         $linkedId = ! empty($m['linked_member_id']) ? (int) $m['linked_member_id'] : null;
-
-        $med = $m['medical_history'] ?? [];
-        if (! is_array($med)) {
-            $med = [];
-        }
-        $medStr = implode(',', array_values(array_filter($med)));
 
         $snapshot = [
             'local_last_name' => trim($m['local_last_name'] ?? ''),
@@ -588,7 +641,7 @@ class HouseholdProfilingController extends BaseController
                 'philhealth_id' => $snapshot['philhealth_id'],
                 'membership_type' => $snapshot['membership_type'],
                 'philhealth_category' => $snapshot['philhealth_category'],
-                'medical_history' => $medStr ?: null,
+                'medical_history' => null,
                 'lmp_date' => $snapshot['lmp_date'],
                 'educ_attainment' => $snapshot['educ_attainment'],
                 'religion' => $snapshot['religion'],
@@ -601,7 +654,7 @@ class HouseholdProfilingController extends BaseController
             'snapshot' => $snapshot,
             'relationship_code' => ! empty($m['relationship_code']) ? (int) $m['relationship_code'] : null,
             'relationship_other' => trim($m['relationship_other'] ?? '') ?: null,
-            'medical_history' => $medStr ?: null,
+            'medical_history' => null,
             'status_in_household' => trim($m['status_in_household'] ?? '') ?: null,
             'stay_from' => ! empty($m['stay_from']) ? $this->toDbDate($m['stay_from']) : null,
             'stay_to' => ! empty($m['stay_to']) ? $this->toDbDate($m['stay_to']) : null,
@@ -845,5 +898,147 @@ class HouseholdProfilingController extends BaseController
             'C'  => 'live_in',
             default => null,
         };
+    }
+
+    public function medicalHistories(int $memberId)
+    {
+        $actor = $this->actor();
+        $member = $this->findAccessibleGroupMember($actor, $memberId);
+
+        if (! $member) {
+            return $this->response->setStatusCode(404)->setJSON([
+                'ok' => false,
+                'message' => 'Member not found or not accessible.',
+            ]);
+        }
+
+        $mhModel = new HhGroupMemberMedicalHistoryModel();
+
+        $rows = $mhModel
+            ->where('group_member_id', $memberId)
+            ->orderBy('date_diagnosed', 'DESC')
+            ->orderBy('id', 'DESC')
+            ->findAll();
+
+        return $this->response->setJSON([
+            'ok' => true,
+            'rows' => $rows,
+        ]);
+    }
+
+    public function saveMedicalHistory(int $memberId)
+    {
+        $actor = $this->actor();
+        $member = $this->findAccessibleGroupMember($actor, $memberId);
+
+        if (! $member) {
+            return $this->response->setStatusCode(404)->setJSON([
+                'ok' => false,
+                'message' => 'Member not found or not accessible.',
+            ]);
+        }
+
+        $post = $this->request->getPost();
+
+        $historyId = (int) ($post['history_id'] ?? 0);
+        $conditionName = trim((string) ($post['condition_name'] ?? ''));
+        $dateDiagnosed = trim((string) ($post['date_diagnosed'] ?? ''));
+        $status = trim((string) ($post['status'] ?? ''));
+        $remarks = trim((string) ($post['remarks'] ?? ''));
+
+        if ($conditionName === '') {
+            return $this->response->setStatusCode(422)->setJSON([
+                'ok' => false,
+                'message' => 'Condition/Illness is required.',
+            ]);
+        }
+
+        $mhModel = new HhGroupMemberMedicalHistoryModel();
+
+        $payload = [
+            'group_member_id' => $memberId,
+            'condition_name'  => $conditionName,
+            'date_diagnosed'  => $dateDiagnosed !== '' ? $this->toDbDate($dateDiagnosed) : null,
+            'status'          => $status !== '' ? $status : null,
+            'remarks'         => $remarks !== '' ? $remarks : null,
+        ];
+
+        if ($historyId > 0) {
+            $existing = $mhModel->find($historyId);
+
+            if (! $existing || (int) $existing['group_member_id'] !== $memberId) {
+                return $this->response->setStatusCode(404)->setJSON([
+                    'ok' => false,
+                    'message' => 'Medical history record not found.',
+                ]);
+            }
+
+            $mhModel->update($historyId, $payload);
+        } else {
+            $historyId = $mhModel->insert($payload, true);
+        }
+
+        $row = $mhModel->find($historyId);
+
+        return $this->response->setJSON([
+            'ok' => true,
+            'message' => 'Medical history saved successfully.',
+            'row' => $row,
+        ]);
+    }
+
+    public function deleteMedicalHistory(int $historyId)
+    {
+        $actor = $this->actor();
+        $mhModel = new HhGroupMemberMedicalHistoryModel();
+
+        $row = $mhModel->find($historyId);
+        if (! $row) {
+            return $this->response->setStatusCode(404)->setJSON([
+                'ok' => false,
+                'message' => 'Medical history record not found.',
+            ]);
+        }
+
+        $member = $this->findAccessibleGroupMember($actor, (int) $row['group_member_id']);
+        if (! $member) {
+            return $this->response->setStatusCode(403)->setJSON([
+                'ok' => false,
+                'message' => 'Not allowed.',
+            ]);
+        }
+
+        $mhModel->delete($historyId);
+
+        return $this->response->setJSON([
+            'ok' => true,
+            'message' => 'Medical history deleted successfully.',
+        ]);
+    }
+
+    private function findAccessibleGroupMember(array $actor, int $memberId): ?array
+    {
+        $db = \Config\Database::connect();
+
+        $row = $db->table('hh_group_members gm')
+            ->select('gm.*, fg.visit_id, v.barangay_pcode, v.municipality_pcode')
+            ->join('hh_family_groups fg', 'fg.id = gm.family_group_id', 'left')
+            ->join('hh_visits v', 'v.id = fg.visit_id', 'left')
+            ->where('gm.id', $memberId)
+            ->get()
+            ->getRowArray();
+
+        if (! $row) {
+            return null;
+        }
+
+        if (! $this->canAccessVisit($actor, [
+            'barangay_pcode' => $row['barangay_pcode'] ?? null,
+            'municipality_pcode' => $row['municipality_pcode'] ?? null,
+        ])) {
+            return null;
+        }
+
+        return $row;
     }
 }

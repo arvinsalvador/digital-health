@@ -60,6 +60,10 @@ $routes->group('admin', ['filter' => 'auth'], function($routes){
         // AJAX search for linking members
         $routes->get('household-profiling/search-members', 'Admin\HouseholdProfilingController::searchMembers');
 
+         // Medical history AJAX
+        $routes->get('household-profiling/member/(:num)/medical-histories', 'Admin\HouseholdProfilingController::medicalHistories/$1');
+        $routes->post('household-profiling/member/(:num)/medical-histories/save', 'Admin\HouseholdProfilingController::saveMedicalHistory/$1');
+        $routes->post('household-profiling/medical-history/(:num)/delete', 'Admin\HouseholdProfilingController::deleteMedicalHistory/$1');
 
         // Household Map Page
         $routes->get('household-map', 'Admin\HouseholdMapController::index');

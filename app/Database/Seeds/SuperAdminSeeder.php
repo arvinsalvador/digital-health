@@ -22,7 +22,7 @@ class SuperAdminSeeder extends Seeder
 
         $db->table('users')->insert([
             'username'      => 'superadmin',
-            'password_hash' => password_hash('asdfasdf', PASSWORD_DEFAULT),
+            'password_hash' => password_hash('Snapshot)1', PASSWORD_DEFAULT),
             'email'         => 'asalvador@ssct.edu.ph',
             'first_name'    => 'Super',
             'middle_name'   => null,

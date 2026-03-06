@@ -71,7 +71,7 @@
                   'philhealth_id' => $m['philhealth_id'] ?? '',
                   'membership_type' => $m['membership_type'] ?? '',
                   'philhealth_category' => $m['philhealth_category'] ?? '',
-                  'medical_history' => $m['medical_history_arr'] ?? [],
+                  'medical_histories' => $m['medical_histories'] ?? [],
                   'lmp_date' => $m['lmp_date'] ?? '',
                   'educ_attainment' => $m['educ_attainment'] ?? '',
                   'religion' => $m['religion'] ?? '',
@@ -378,6 +378,57 @@
   </div>
 </div>
 
+<div class="modal fade" id="medicalHistoryModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="medicalHistoryForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="medicalHistoryModalTitle">Add Medical History</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+
+        <div class="modal-body">
+          <input type="hidden" id="mh_member_id" name="member_id">
+          <input type="hidden" id="mh_history_id" name="history_id">
+
+          <div class="mb-3">
+            <label class="form-label">Condition / Illness <span class="text-danger">*</span></label>
+            <input type="text" class="form-control" id="mh_condition_name" name="condition_name" placeholder="e.g. Hypertension" required>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Date Diagnosed / Date Noted</label>
+            <input type="date" class="form-control" id="mh_date_diagnosed" name="date_diagnosed">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Status</label>
+            <select class="form-select" id="mh_status" name="status">
+              <option value="">Select</option>
+              <option value="Active">Active</option>
+              <option value="Recovered">Recovered</option>
+              <option value="Under Treatment">Under Treatment</option>
+              <option value="Past History">Past History</option>
+            </select>
+          </div>
+
+          <div class="mb-0">
+            <label class="form-label">Remarks</label>
+            <textarea class="form-control" id="mh_remarks" name="remarks" rows="3" placeholder="Optional remarks"></textarea>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="medicalHistorySaveBtn">
+            <i class="fa-solid fa-floppy-disk"></i> Save
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <?= $this->endSection() ?>
 
 <?= $this->section('scripts') ?>
@@ -397,6 +448,36 @@
   .qCell input { min-width: 88px; }
   .household-map { width: 100%; height: 360px; border-radius: 8px; overflow: hidden; background: #f8fafc; }
   .leaflet-container { font: inherit; }
+
+  .medical-history-list { display: flex; flex-direction: column; gap: 8px; }
+  .medical-history-item {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: #fff;
+  }
+  .medical-history-item .mh-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .medical-history-item .mh-title {
+    font-weight: 600;
+  }
+  .medical-history-item .mh-meta {
+    font-size: 12px;
+    color: #6b7280;
+    line-height: 1.4;
+  }
+  .medical-history-item .mh-actions .btn {
+    padding: 2px 6px;
+  }
+  .medical-history-empty {
+    font-size: 12px;
+    color: #6b7280;
+  }
 </style>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -704,9 +785,10 @@
   }
 
   function memberRowTemplate(gIndex, mIndex, data){
-    const med = Array.isArray(data.medical_history) ? data.medical_history : [];
-    const has = (x) => med.includes(x) ? 'checked' : '';
+    //const med = Array.isArray(data.medical_history) ? data.medical_history : [];
+    // const has = (x) => med.includes(x) ? 'checked' : '';
     const linked = !!data.linked_member_id;
+    const medicalHistories = Array.isArray(data.medical_histories) ? data.medical_histories : [];
 
     return `
       <tr class="member-row" data-g="${gIndex}" data-m="${mIndex}">
@@ -791,11 +873,23 @@
           </div>
         </td>
 
-        <td class="w-180">
-          <div class="form-check"><input class="form-check-input" type="checkbox" name="groups[${gIndex}][members][${mIndex}][medical_history][]" value="HPN" ${has('HPN')}> <label class="form-check-label">HPN</label></div>
-          <div class="form-check"><input class="form-check-input" type="checkbox" name="groups[${gIndex}][members][${mIndex}][medical_history][]" value="DM" ${has('DM')}> <label class="form-check-label">DM</label></div>
-          <div class="form-check"><input class="form-check-input" type="checkbox" name="groups[${gIndex}][members][${mIndex}][medical_history][]" value="TB" ${has('TB')}> <label class="form-check-label">TB</label></div>
-          <div class="form-check"><input class="form-check-input" type="checkbox" name="groups[${gIndex}][members][${mIndex}][medical_history][]" value="S" ${has('S')}> <label class="form-check-label">Surgery</label></div>
+        <td class="w-220">
+          <input type="hidden" name="groups[${gIndex}][members][${mIndex}][id]" value="${data.id || ''}" class="groupMemberId">
+
+          ${data.id ? `
+            <div class="medical-history-list js-medical-history-list" data-member-id="${data.id}">
+              ${renderMedicalHistoryItems(medicalHistories)}
+            </div>
+            <div class="mt-2">
+              <button type="button" class="btn btn-sm btn-outline-primary js-add-medical-history" data-member-id="${data.id}">
+                <i class="fa-solid fa-plus"></i> Add
+              </button>
+            </div>
+          ` : `
+            <div class="medical-history-empty">
+              Save the household record first, then reopen Edit to manage medical history.
+            </div>
+          `}
         </td>
 
         <td class="w-140">
@@ -926,7 +1020,7 @@
 
     if (members.length === 0) {
       tbody.insertAdjacentHTML('beforeend', memberRowTemplate(gIndex, 0, {
-        medical_history: [],
+        medical_histories: [],
         relationship_code: '',
         sex: '',
       }));
@@ -939,11 +1033,79 @@
     addGroup({ living_status: 'owner_occupant', members: [] });
   });
 
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function escapeAttr(str){
+    return escapeHtml(str).replace(/"/g, '&quot;');
+  }
+
+  function formatDisplayDate(ymd) {
+    if (!ymd) return '-';
+    const d = new Date(ymd + 'T00:00:00');
+    if (isNaN(d.getTime())) return ymd;
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const yy = d.getFullYear();
+    return `${mm}/${dd}/${yy}`;
+  }
+
+  function renderMedicalHistoryItems(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return `<div class="medical-history-empty">No medical history recorded.</div>`;
+    }
+
+    return rows.map(row => `
+      <div class="medical-history-item" data-history-id="${row.id}">
+        <div class="mh-head">
+          <div class="mh-title">${escapeHtml(row.condition_name || '')}</div>
+          <div class="mh-actions d-flex gap-1">
+            <button type="button"
+                    class="btn btn-sm btn-outline-primary js-edit-medical-history"
+                    data-history-id="${row.id}"
+                    data-condition="${escapeHtml(row.condition_name || '')}"
+                    data-date="${escapeHtml(row.date_diagnosed || '')}"
+                    data-status="${escapeHtml(row.status || '')}"
+                    data-remarks="${escapeHtml(row.remarks || '')}">
+              <i class="fa-solid fa-pen-to-square"></i>
+            </button>
+            <button type="button"
+                    class="btn btn-sm btn-outline-danger js-delete-medical-history"
+                    data-history-id="${row.id}">
+              <i class="fa-solid fa-trash"></i>
+            </button>
+          </div>
+        </div>
+        <div class="mh-meta">
+          <div><strong>Date:</strong> ${escapeHtml(formatDisplayDate(row.date_diagnosed))}</div>
+          <div><strong>Status:</strong> ${escapeHtml(row.status || '-')}</div>
+          <div><strong>Remarks:</strong> ${escapeHtml(row.remarks || '-')}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function updateMedicalHistoryList(memberId, rows) {
+    const list = groupsWrap.querySelector(`.js-medical-history-list[data-member-id="${memberId}"]`);
+    if (!list) return;
+    list.innerHTML = renderMedicalHistoryItems(rows || []);
+  }
+
   groupsWrap.addEventListener('click', (e) => {
     const card = e.target.closest('.group-card');
     if (!card) return;
     const gIndex = parseInt(card.dataset.g, 10);
     const tbody = card.querySelector('.groupMembersBody');
+
+    const memberRow = e.target.closest('tr.member-row');
+    const memberIdInput = memberRow ? memberRow.querySelector('.groupMemberId') : null;
+    const memberId = memberIdInput ? String(memberIdInput.value || '').trim() : '';
 
     if (e.target.closest('.js-remove-group')) {
       if (!confirm('Remove this Family Group and all its members?')) return;
@@ -954,7 +1116,11 @@
 
     if (e.target.closest('.js-add-member')) {
       const mIndex = tbody.querySelectorAll('tr.member-row').length;
-      tbody.insertAdjacentHTML('beforeend', memberRowTemplate(gIndex, mIndex, { medical_history: [] }));
+      tbody.insertAdjacentHTML('beforeend', memberRowTemplate(gIndex, mIndex, {
+        medical_histories: [],
+        relationship_code: '',
+        sex: '',
+      }));
       renumberAll();
       return;
     }
@@ -983,11 +1149,69 @@
       const mIndex = parseInt(row.dataset.m, 10);
 
       row.outerHTML = memberRowTemplate(gIndex, mIndex, {
-        medical_history: [],
+        medical_histories: [],
         relationship_code: '',
         sex: '',
       });
       renumberAll();
+      return;
+    }
+
+    if (e.target.closest('.js-add-medical-history')) {
+      const btn = e.target.closest('.js-add-medical-history');
+      const memberId = btn.dataset.memberId || '';
+      if (!memberId) {
+        alert('Please save the household record first before adding medical history.');
+        return;
+      }
+      openAddMedicalHistoryModal(memberId);
+      return;
+    }
+
+    if (e.target.closest('.js-edit-medical-history')) {
+      const btn = e.target.closest('.js-edit-medical-history');
+      if (!memberId) {
+        alert('Member record is not yet saved.');
+        return;
+      }
+      openEditMedicalHistoryModal(memberId, btn);
+      return;
+    }
+
+    if (e.target.closest('.js-delete-medical-history')) {
+      const btn = e.target.closest('.js-delete-medical-history');
+      const historyId = btn.dataset.historyId || '';
+
+      if (!memberId || !historyId) {
+        alert('Medical history record not found.');
+        return;
+      }
+
+      if (!confirm('Are you sure you want to delete this medical history record?')) {
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('<?= csrf_token() ?>', '<?= csrf_hash() ?>');
+
+      fetch(`<?= base_url('admin/registry/household-profiling/medical-history') ?>/${historyId}/delete`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(async r => {
+        const res = await r.json();
+        if (!r.ok || !res.ok) {
+          throw new Error(res && res.message ? res.message : 'Failed to delete medical history.');
+        }
+        return res;
+      })
+      .then(() => {
+        loadMedicalHistories(memberId);
+      })
+      .catch(err => {
+        alert(err.message || 'Failed to delete medical history.');
+      });
+
       return;
     }
   });
@@ -1076,20 +1300,6 @@
     `).join('');
   }
 
-  function escapeHtml(str){
-    return String(str || '').replace(/[&<>"']/g, s => ({
-      '&':'&amp;',
-      '<':'&lt;',
-      '>':'&gt;',
-      '"':'&quot;',
-      "'":'&#39;'
-    }[s]));
-  }
-
-  function escapeAttr(str){
-    return escapeHtml(str).replace(/"/g, '&quot;');
-  }
-
   let searchTimer = null;
   linkSearchInput.addEventListener('input', () => {
     const q = linkSearchInput.value.trim();
@@ -1141,7 +1351,7 @@
       local_middle_name: middle,
       sex: sex,
       dob: dob,
-      medical_history: [],
+      medical_histories: [],
     }));
 
     renumberAll();
@@ -1156,6 +1366,77 @@
   } else {
     addGroup({ living_status: 'owner_occupant', members: [] });
   }
+
+  const medicalHistoryModalEl = document.getElementById('medicalHistoryModal');
+  const medicalHistoryModal = new bootstrap.Modal(medicalHistoryModalEl);
+  const medicalHistoryForm = document.getElementById('medicalHistoryForm');
+
+  function resetMedicalHistoryForm() {
+    medicalHistoryForm.reset();
+    document.getElementById('mh_member_id').value = '';
+    document.getElementById('mh_history_id').value = '';
+    document.getElementById('medicalHistoryModalTitle').textContent = 'Add Medical History';
+  }
+
+  function openAddMedicalHistoryModal(memberId) {
+    resetMedicalHistoryForm();
+    document.getElementById('mh_member_id').value = memberId;
+    document.getElementById('medicalHistoryModalTitle').textContent = 'Add Medical History';
+    medicalHistoryModal.show();
+  }
+
+  function openEditMedicalHistoryModal(memberId, button) {
+    resetMedicalHistoryForm();
+
+    document.getElementById('mh_member_id').value = memberId;
+    document.getElementById('mh_history_id').value = button.dataset.historyId || '';
+    document.getElementById('mh_condition_name').value = button.dataset.condition || '';
+    document.getElementById('mh_date_diagnosed').value = button.dataset.date || '';
+    document.getElementById('mh_status').value = button.dataset.status || '';
+    document.getElementById('mh_remarks').value = button.dataset.remarks || '';
+    document.getElementById('medicalHistoryModalTitle').textContent = 'Edit Medical History';
+
+    medicalHistoryModal.show();
+  }
+
+  function loadMedicalHistories(memberId) {
+    fetch(`<?= base_url('admin/registry/household-profiling/member') ?>/${memberId}/medical-histories`)
+      .then(r => r.json())
+      .then(res => {
+        if (!res || !res.ok) return;
+        updateMedicalHistoryList(memberId, res.rows || []);
+      })
+      .catch(() => {});
+  }
+
+  medicalHistoryForm.addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    const memberId = document.getElementById('mh_member_id').value;
+    if (!memberId) return;
+
+    const formData = new FormData(medicalHistoryForm);
+    formData.append('<?= csrf_token() ?>', '<?= csrf_hash() ?>');
+
+    fetch(`<?= base_url('admin/registry/household-profiling/member') ?>/${memberId}/medical-histories/save`, {
+      method: 'POST',
+      body: formData
+    })
+    .then(async r => {
+      const res = await r.json();
+      if (!r.ok || !res.ok) {
+        throw new Error(res && res.message ? res.message : 'Failed to save medical history.');
+      }
+      return res;
+    })
+    .then(() => {
+      medicalHistoryModal.hide();
+      loadMedicalHistories(memberId);
+    })
+    .catch(err => {
+      alert(err.message || 'Failed to save medical history.');
+    });
+  });
 })();
 </script>
 

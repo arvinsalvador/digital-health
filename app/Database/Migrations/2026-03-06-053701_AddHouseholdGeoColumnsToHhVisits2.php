@@ -4,7 +4,7 @@ namespace App\Database\Migrations;
 
 use CodeIgniter\Database\Migration;
 
-class AddHouseholdGeoColumnsToHhVisits extends Migration
+class AddHouseholdGeoColumnsToHhVisits2 extends Migration
 {
     public function up()
     {
