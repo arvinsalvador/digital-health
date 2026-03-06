@@ -4,7 +4,7 @@ namespace App\Controllers\Admin;
 
 use App\Controllers\BaseController;
 use App\Models\HhVisitModel;
-use App\Models\HhMemberModel; // existing table used for "link existing"
+use App\Models\HhMemberModel;
 use App\Models\HhFamilyGroupModel;
 use App\Models\HhGroupMemberModel;
 use App\Models\HhGroupMemberQuarterModel;
@@ -15,6 +15,7 @@ class HouseholdProfilingController extends BaseController
     {
         $actor = $this->actor();
         $db = \Config\Database::connect();
+        $q = trim((string) $this->request->getGet('q'));
 
         $builder = $db->table('hh_visits v')
             ->select(" 
@@ -22,25 +23,42 @@ class HouseholdProfilingController extends BaseController
                 ba.name AS barangay_name,
                 mu.name AS municipality_name
             ")
-            ->join('admin_areas ba', 'ba.pcode = v.barangay_pcode AND ba.level = 4', 'left')
-            ->join('admin_areas mu', 'mu.pcode = v.municipality_pcode AND mu.level = 3', 'left')
-            ->orderBy('v.visit_date', 'DESC')
-            ->orderBy('v.id', 'DESC');
+            ->join('admin_areas ba', "ba.pcode = v.barangay_pcode AND ba.level = 4", 'left')
+            ->join('admin_areas mu', "mu.pcode = v.municipality_pcode AND mu.level = 3", 'left');
 
         if (($actor['user_type'] ?? '') === 'super_admin') {
-            // no filter
+            // no scope restriction
         } elseif (in_array(($actor['user_type'] ?? ''), ['admin', 'staff'], true)) {
             $builder->where('v.municipality_pcode', $actor['municipality_pcode'] ?? null);
         } else {
             $builder->where('v.barangay_pcode', $actor['barangay_pcode'] ?? null);
         }
 
-        $visits = $builder->get()->getResultArray();
+        if ($q !== '') {
+            $builder->groupStart()
+                ->like('v.household_no', $q)
+                ->orLike('v.respondent_last_name', $q)
+                ->orLike('v.respondent_first_name', $q)
+                ->orLike('v.respondent_middle_name', $q)
+                ->orLike('v.sitio_purok', $q)
+                ->orLike('v.barangay_pcode', $q)
+                ->orLike('ba.name', $q)
+                ->orLike('mu.name', $q)
+            ->groupEnd();
+        }
+
+        $visits = $builder
+            ->orderBy('v.visit_date', 'DESC')
+            ->orderBy('v.id', 'DESC')
+            ->get()
+            ->getResultArray();
 
         return view('admin/registry/household_profiling/index', [
             'pageTitle' => 'Household Profiling',
             'visits' => $visits,
             'actor' => $actor,
+            'q' => $q,
+            'canDelete' => in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin'], true),
         ]);
     }
 
@@ -83,10 +101,6 @@ class HouseholdProfilingController extends BaseController
             'municipality_pcode' => $post['municipality_pcode'] ?? ($actor['municipality_pcode'] ?? null),
 
             'household_no' => trim($post['household_no']),
-            'household_latitude' => $this->normalizeCoordinate($post['household_latitude'] ?? null, -90, 90),
-            'household_longitude' => $this->normalizeCoordinate($post['household_longitude'] ?? null, -180, 180),
-            'household_location_source' => trim((string) ($post['household_location_source'] ?? '')) ?: null,
-            'household_location_accuracy' => $this->normalizePositiveDecimal($post['household_location_accuracy'] ?? null),
 
             'respondent_last_name' => trim($post['respondent_last_name']),
             'respondent_first_name' => trim($post['respondent_first_name']),
@@ -104,7 +118,6 @@ class HouseholdProfilingController extends BaseController
             'water_source_other' => trim($post['water_source_other'] ?? '') ?: null,
 
             'toilet_facility' => $post['toilet_facility'],
-
             'remarks' => trim($post['remarks'] ?? '') ?: null,
         ];
 
@@ -115,7 +128,6 @@ class HouseholdProfilingController extends BaseController
         $db->transStart();
 
         $visitId = $visitModel->insert($visitPayload, true);
-
         $this->insertGroupsForVisit($visitId, $visitDate, $groups);
 
         $db->transComplete();
@@ -217,10 +229,6 @@ class HouseholdProfilingController extends BaseController
             'municipality_pcode' => $post['municipality_pcode'] ?? ($visit['municipality_pcode'] ?? null),
 
             'household_no' => trim($post['household_no']),
-            'household_latitude' => $this->normalizeCoordinate($post['household_latitude'] ?? null, -90, 90),
-            'household_longitude' => $this->normalizeCoordinate($post['household_longitude'] ?? null, -180, 180),
-            'household_location_source' => trim((string) ($post['household_location_source'] ?? '')) ?: null,
-            'household_location_accuracy' => $this->normalizePositiveDecimal($post['household_location_accuracy'] ?? null),
 
             'respondent_last_name' => trim($post['respondent_last_name']),
             'respondent_first_name' => trim($post['respondent_first_name']),
@@ -269,15 +277,56 @@ class HouseholdProfilingController extends BaseController
         return redirect()->to(base_url('admin/registry/household-profiling'))->with('success', 'Updated.');
     }
 
+    public function delete(int $id)
+    {
+        $actor = $this->actor();
+
+        if (!in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin'], true)) {
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'You are not allowed to delete this record.');
+        }
+
+        $visitModel = new HhVisitModel();
+        $familyModel = new HhFamilyGroupModel();
+        $groupMemberModel = new HhGroupMemberModel();
+        $qModel = new HhGroupMemberQuarterModel();
+
+        $visit = $visitModel->find($id);
+        if (!$visit) {
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Record not found.');
+        }
+
+        if (!$this->canDeleteVisit($actor, $visit)) {
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'You are not allowed to delete this record.');
+        }
+
+        $db = \Config\Database::connect();
+        $db->transStart();
+
+        $groups = $familyModel->where('visit_id', $id)->findAll();
+        foreach ($groups as $g) {
+            $members = $groupMemberModel->where('family_group_id', $g['id'])->findAll();
+            foreach ($members as $m) {
+                $qModel->where('group_member_id', $m['id'])->delete();
+            }
+            $groupMemberModel->where('family_group_id', $g['id'])->delete();
+        }
+        $familyModel->where('visit_id', $id)->delete();
+        $visitModel->delete($id);
+
+        $db->transComplete();
+
+        if ($db->transStatus() === false) {
+            return redirect()->to(base_url('admin/registry/household-profiling'))->with('error', 'Failed to delete household profiling.');
+        }
+
+        return redirect()->to(base_url('admin/registry/household-profiling'))->with('success', 'Household profiling deleted successfully.');
+    }
+
     public function show(int $id)
     {
         return redirect()->to(base_url('admin/registry/household-profiling/' . $id . '/edit'));
     }
 
-    /**
-     * AJAX: Search existing hh_members records for linking.
-     * GET ?q=... (name/dob partial)
-     */
     public function searchMembers()
     {
         $actor = $this->actor();
@@ -311,7 +360,7 @@ class HouseholdProfilingController extends BaseController
 
         $qNorm = preg_replace('/\s+/', ' ', $q);
         $parts = preg_split('/[\s,]+/', $qNorm) ?: [];
-        $parts = array_values(array_filter(array_map('trim', $parts), static fn ($v) => $v !== ''));
+        $parts = array_values(array_filter(array_map('trim', $parts), static fn($v) => $v !== ''));
 
         $builder->groupStart();
         foreach ($parts as $part) {
@@ -574,7 +623,6 @@ class HouseholdProfilingController extends BaseController
         if ($age < 0) {
             return null;
         }
-
         if ($age <= 5) {
             return 'INFANT';
         }
@@ -598,23 +646,6 @@ class HouseholdProfilingController extends BaseController
         if (empty($post['barangay_pcode'])) return 'Barangay is required.';
         if (empty($post['household_no'])) return 'Household No. is required.';
 
-        $latRaw = trim((string) ($post['household_latitude'] ?? ''));
-        $lngRaw = trim((string) ($post['household_longitude'] ?? ''));
-        $accRaw = trim((string) ($post['household_location_accuracy'] ?? ''));
-
-        if (($latRaw !== '' && $lngRaw === '') || ($latRaw === '' && $lngRaw !== '')) {
-            return 'Please provide both household latitude and longitude, or leave both blank.';
-        }
-        if ($latRaw !== '' && !$this->isValidCoordinate($latRaw, -90, 90)) {
-            return 'Household latitude must be a valid number between -90 and 90.';
-        }
-        if ($lngRaw !== '' && !$this->isValidCoordinate($lngRaw, -180, 180)) {
-            return 'Household longitude must be a valid number between -180 and 180.';
-        }
-        if ($accRaw !== '' && !$this->isValidPositiveDecimal($accRaw)) {
-            return 'Location accuracy must be zero or a positive number.';
-        }
-
         if (empty($post['respondent_last_name']) || empty($post['respondent_first_name'])) {
             return 'Respondent name is required.';
         }
@@ -629,19 +660,17 @@ class HouseholdProfilingController extends BaseController
         }
 
         if (!isset($post['socioeconomic_status'])) return 'Socioeconomic status is required.';
-
         if (!isset($post['water_source'])) return 'Water source is required.';
         if (($post['water_source'] ?? '') === 'others' && empty($post['water_source_other'])) {
             return 'Please specify water source.';
         }
-
         if (empty($post['toilet_facility'])) return 'Toilet type is required.';
 
         if (!is_array($groups) || empty($groups)) {
             return 'Please add at least one Family Group.';
         }
 
-        foreach ($groups as $gi => $g) {
+        foreach ($groups as $g) {
             if (empty($g['living_status'])) {
                 return 'Family Group living status is required.';
             }
@@ -651,7 +680,7 @@ class HouseholdProfilingController extends BaseController
                 return 'Each Family Group must have at least one member.';
             }
 
-            foreach ($members as $mi => $m) {
+            foreach ($members as $m) {
                 $linked = !empty($m['linked_member_id']);
 
                 if (!$linked) {
@@ -704,10 +733,28 @@ class HouseholdProfilingController extends BaseController
         if ($type === 'super_admin') return true;
 
         if (in_array($type, ['admin', 'staff'], true)) {
-            return !empty($actor['municipality_pcode']) && ($visit['municipality_pcode'] ?? null) === $actor['municipality_pcode'];
+            return !empty($actor['municipality_pcode'])
+                && ($visit['municipality_pcode'] ?? null) === $actor['municipality_pcode'];
         }
 
-        return !empty($actor['barangay_pcode']) && ($visit['barangay_pcode'] ?? null) === $actor['barangay_pcode'];
+        return !empty($actor['barangay_pcode'])
+            && ($visit['barangay_pcode'] ?? null) === $actor['barangay_pcode'];
+    }
+
+    private function canDeleteVisit(array $actor, array $visit): bool
+    {
+        $type = $actor['user_type'] ?? '';
+
+        if ($type === 'super_admin') {
+            return true;
+        }
+
+        if ($type === 'admin') {
+            return !empty($actor['municipality_pcode'])
+                && ($visit['municipality_pcode'] ?? null) === $actor['municipality_pcode'];
+        }
+
+        return false;
     }
 
     private function locationLockForActor(array $actor): array
@@ -786,50 +833,5 @@ class HouseholdProfilingController extends BaseController
             'C'  => 'live_in',
             default => null,
         };
-    }
-
-    private function isValidCoordinate(string $value, float $min, float $max): bool
-    {
-        if (!is_numeric($value)) {
-            return false;
-        }
-
-        $num = (float) $value;
-        return $num >= $min && $num <= $max;
-    }
-
-    private function normalizeCoordinate($value, float $min, float $max): ?string
-    {
-        $value = trim((string) $value);
-        if ($value === '') {
-            return null;
-        }
-        if (!$this->isValidCoordinate($value, $min, $max)) {
-            return null;
-        }
-
-        return number_format((float) $value, 7, '.', '');
-    }
-
-    private function isValidPositiveDecimal(string $value): bool
-    {
-        if (!is_numeric($value)) {
-            return false;
-        }
-
-        return (float) $value >= 0;
-    }
-
-    private function normalizePositiveDecimal($value): ?string
-    {
-        $value = trim((string) $value);
-        if ($value === '') {
-            return null;
-        }
-        if (!$this->isValidPositiveDecimal($value)) {
-            return null;
-        }
-
-        return number_format((float) $value, 2, '.', '');
     }
 }
