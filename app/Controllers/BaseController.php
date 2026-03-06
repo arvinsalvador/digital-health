@@ -17,22 +17,15 @@ abstract class BaseController extends Controller
 
         service('moduleBootstrap')->bootEnabled();
 
-        // Cache auth user in controller lifecycle
         $u = session('auth_user');
         $this->authUser = is_array($u) ? $u : [];
     }
 
-    /**
-     * Current logged-in user array (shape set by AuthController::attempt()).
-     */
     protected function actor(): array
     {
         return $this->authUser;
     }
 
-    /**
-     * Friendly display name for navbar.
-     */
     protected function currentUserName(): string
     {
         if (empty($this->authUser)) {
@@ -44,5 +37,64 @@ abstract class BaseController extends Controller
 
         $name = trim($fn . ' ' . $ln);
         return $name !== '' ? $name : (string)($this->authUser['username'] ?? 'User');
+    }
+
+    protected function isSuperAdmin(): bool
+    {
+        return (($this->authUser['user_type'] ?? '') === 'super_admin');
+    }
+
+    protected function isAdmin(): bool
+    {
+        return (($this->authUser['user_type'] ?? '') === 'admin');
+    }
+
+    protected function isStaff(): bool
+    {
+        return (($this->authUser['user_type'] ?? '') === 'staff');
+    }
+
+    protected function isBhw(): bool
+    {
+        return (($this->authUser['user_type'] ?? '') === 'bhw');
+    }
+
+    protected function isBarangayCaptain(): bool
+    {
+        return (($this->authUser['user_type'] ?? '') === 'barangay_captain');
+    }
+
+    protected function canManageModules(): bool
+    {
+        return $this->isSuperAdmin();
+    }
+
+    protected function canManageLocations(): bool
+    {
+        return $this->isSuperAdmin();
+    }
+
+    protected function canManageSystemSettings(): bool
+    {
+        return $this->isSuperAdmin();
+    }
+
+    protected function canManageUsers(): bool
+    {
+        return $this->isSuperAdmin() || $this->isAdmin() || $this->isStaff();
+    }
+
+    protected function canGenerateReports(): bool
+    {
+        return $this->isSuperAdmin() || $this->isAdmin() || $this->isStaff();
+    }
+
+    protected function canViewMapPage(): bool
+    {
+        return $this->isSuperAdmin()
+            || $this->isAdmin()
+            || $this->isStaff()
+            || $this->isBhw()
+            || $this->isBarangayCaptain();
     }
 }

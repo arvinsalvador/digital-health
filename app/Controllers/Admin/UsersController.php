@@ -7,42 +7,48 @@ use App\Models\UserModel;
 
 class UsersController extends BaseController
 {
-    /**
-     * Canonical user types (keep consistent across DB + UI)
-     */
     private array $validUserTypes = [
         'super_admin',
-        'admin',          // RHU Admin
-        'staff',          // RHU Staff
-        'brgy_captain',
-        'brgy_secretary',
+        'admin',
+        'staff',
         'bhw',
+        'barangay_captain',
     ];
 
     public function index()
     {
         $actor = $this->actor();
 
+        if (! $this->canManageUsers()) {
+            return redirect()->to(base_url('admin/dashboard'))
+                ->with('error', 'You are not allowed to access Users.');
+        }
+
         $model = new UserModel();
         $builder = $model->orderBy('created_at', 'DESC');
 
-        // Scope-filter list
-        if (($actor['user_type'] ?? '') === 'super_admin') {
+        $actorType = (string)($actor['user_type'] ?? '');
+
+        if ($actorType === 'super_admin') {
             $users = $builder->findAll();
-        } elseif (in_array(($actor['user_type'] ?? ''), ['admin', 'staff'], true)) {
+        } elseif ($actorType === 'admin') {
             $users = $builder
                 ->where('municipality_pcode', $actor['municipality_pcode'] ?? null)
                 ->findAll();
-        } else {
+        } elseif ($actorType === 'staff') {
             $users = $builder
                 ->where('barangay_pcode', $actor['barangay_pcode'] ?? null)
+                ->whereIn('user_type', ['bhw', 'barangay_captain'])
                 ->findAll();
+        } else {
+            return redirect()->to(base_url('admin/dashboard'))
+                ->with('error', 'You are not allowed to access Users.');
         }
 
         return view('admin/settings/users/index', [
             'pageTitle' => 'Users',
-            'users'     => $users,
-            'actor'     => $actor,
+            'users' => $users,
+            'actor' => $actor,
             'currentUserName' => $this->currentUserName(),
         ]);
     }
@@ -51,15 +57,18 @@ class UsersController extends BaseController
     {
         $actor = $this->actor();
 
+        if (! $this->canManageUsers()) {
+            return redirect()->to(base_url('admin/dashboard'))
+                ->with('error', 'You are not allowed to add users.');
+        }
+
         return view('admin/settings/users/form', [
             'pageTitle' => 'Add User',
-            'mode'      => 'create',
-            'user'      => null,
-
-            'actor'            => $actor,
+            'mode' => 'create',
+            'user' => null,
+            'actor' => $actor,
             'allowedUserTypes' => $this->allowedUserTypesForActor((string)($actor['user_type'] ?? '')),
-            'lock'             => $this->locationLockForActor($actor),
-
+            'lock' => $this->locationLockForActor($actor),
             'currentUserName' => $this->currentUserName(),
         ]);
     }
@@ -67,7 +76,13 @@ class UsersController extends BaseController
     public function store()
     {
         $actor = $this->actor();
-        $post  = $this->request->getPost();
+
+        if (! $this->canManageUsers()) {
+            return redirect()->to(base_url('admin/dashboard'))
+                ->with('error', 'You are not allowed to add users.');
+        }
+
+        $post = $this->request->getPost();
 
         $rules = [
             'username'   => 'required|min_length[4]|max_length[50]|is_unique[users.username]',
@@ -82,14 +97,12 @@ class UsersController extends BaseController
             return redirect()->back()->withInput()->with('error', 'Please check the form fields.');
         }
 
-        // Ensure actor is allowed to create this type
         $targetType = (string)($post['user_type'] ?? '');
         $allowed = $this->allowedUserTypesForActor((string)($actor['user_type'] ?? ''));
+
         if (! in_array($targetType, $allowed, true)) {
             return redirect()->back()->withInput()->with('error', 'You are not allowed to create this user type.');
         }
-
-        $lock = $this->locationLockForActor($actor);
 
         $data = [
             'username'      => trim((string)$post['username']),
@@ -108,11 +121,12 @@ class UsersController extends BaseController
             'status'    => 1,
         ];
 
-        // Location locking rules (actor scope)
-        $data['region_pcode']       = $lock['region']       ?? ($post['region_pcode'] ?? null);
-        $data['province_pcode']     = $lock['province']     ?? ($post['province_pcode'] ?? null);
-        $data['municipality_pcode'] = $lock['municipality'] ?? ($post['municipality_pcode'] ?? null);
-        $data['barangay_pcode']     = $lock['barangay']     ?? ($post['barangay_pcode'] ?? null);
+        $this->applyLocationScopeByActorAndTarget($actor, $targetType, $post, $data);
+
+        $scopeError = $this->validateTargetScope($targetType, $data);
+        if ($scopeError) {
+            return redirect()->back()->withInput()->with('error', $scopeError);
+        }
 
         $model = new UserModel();
         $model->insert($data);
@@ -124,6 +138,11 @@ class UsersController extends BaseController
     {
         $actor = $this->actor();
 
+        if (! $this->canManageUsers()) {
+            return redirect()->to(base_url('admin/dashboard'))
+                ->with('error', 'You are not allowed to edit users.');
+        }
+
         $model = new UserModel();
         $user  = $model->find((int)$id);
 
@@ -131,15 +150,17 @@ class UsersController extends BaseController
             return redirect()->to(base_url('admin/settings/users'))->with('error', 'User not found.');
         }
 
+        if (! $this->canManageTargetUser($actor, $user)) {
+            return redirect()->to(base_url('admin/settings/users'))->with('error', 'You are not allowed to edit this user.');
+        }
+
         return view('admin/settings/users/form', [
             'pageTitle' => 'Edit User',
-            'mode'      => 'edit',
-            'user'      => $user,
-
-            'actor'            => $actor,
+            'mode' => 'edit',
+            'user' => $user,
+            'actor' => $actor,
             'allowedUserTypes' => $this->allowedUserTypesForActor((string)($actor['user_type'] ?? '')),
-            'lock'             => $this->locationLockForActor($actor),
-
+            'lock' => $this->locationLockForActor($actor),
             'currentUserName' => $this->currentUserName(),
         ]);
     }
@@ -147,13 +168,22 @@ class UsersController extends BaseController
     public function update($id)
     {
         $actor = $this->actor();
-        $post  = $this->request->getPost();
 
+        if (! $this->canManageUsers()) {
+            return redirect()->to(base_url('admin/dashboard'))
+                ->with('error', 'You are not allowed to update users.');
+        }
+
+        $post  = $this->request->getPost();
         $model = new UserModel();
         $user  = $model->find((int)$id);
 
         if (! $user) {
             return redirect()->to(base_url('admin/settings/users'))->with('error', 'User not found.');
+        }
+
+        if (! $this->canManageTargetUser($actor, $user)) {
+            return redirect()->to(base_url('admin/settings/users'))->with('error', 'You are not allowed to update this user.');
         }
 
         $rules = [
@@ -169,11 +199,10 @@ class UsersController extends BaseController
 
         $targetType = (string)($post['user_type'] ?? '');
         $allowed = $this->allowedUserTypesForActor((string)($actor['user_type'] ?? ''));
+
         if (! in_array($targetType, $allowed, true)) {
             return redirect()->back()->withInput()->with('error', 'You are not allowed to assign this user type.');
         }
-
-        $lock = $this->locationLockForActor($actor);
 
         $data = [
             'email'       => trim((string)$post['email']),
@@ -181,23 +210,21 @@ class UsersController extends BaseController
             'middle_name' => trim((string)($post['middle_name'] ?? '')) ?: null,
             'last_name'   => trim((string)$post['last_name']),
             'contact_no'  => trim((string)($post['contact_no'] ?? '')) ?: null,
-
-            'address_line' => trim((string)($post['address_line'] ?? '')) ?: null,
-            'postal_code'  => trim((string)($post['postal_code'] ?? '')) ?: null,
-
-            'user_type' => $targetType,
+            'address_line'=> trim((string)($post['address_line'] ?? '')) ?: null,
+            'postal_code' => trim((string)($post['postal_code'] ?? '')) ?: null,
+            'user_type'   => $targetType,
         ];
 
-        // Optional password update
         if (! empty($post['password'])) {
             $data['password_hash'] = password_hash((string)$post['password'], PASSWORD_DEFAULT);
         }
 
-        // Location locking
-        $data['region_pcode']       = $lock['region']       ?? ($post['region_pcode'] ?? null);
-        $data['province_pcode']     = $lock['province']     ?? ($post['province_pcode'] ?? null);
-        $data['municipality_pcode'] = $lock['municipality'] ?? ($post['municipality_pcode'] ?? null);
-        $data['barangay_pcode']     = $lock['barangay']     ?? ($post['barangay_pcode'] ?? null);
+        $this->applyLocationScopeByActorAndTarget($actor, $targetType, $post, $data);
+
+        $scopeError = $this->validateTargetScope($targetType, $data);
+        if ($scopeError) {
+            return redirect()->back()->withInput()->with('error', $scopeError);
+        }
 
         $model->update((int)$id, $data);
 
@@ -206,11 +233,22 @@ class UsersController extends BaseController
 
     public function toggle($id)
     {
+        $actor = $this->actor();
+
+        if (! $this->canManageUsers()) {
+            return redirect()->to(base_url('admin/dashboard'))
+                ->with('error', 'You are not allowed to update user status.');
+        }
+
         $model = new UserModel();
         $user  = $model->find((int)$id);
 
         if (! $user) {
             return redirect()->to(base_url('admin/settings/users'))->with('error', 'User not found.');
+        }
+
+        if (! $this->canManageTargetUser($actor, $user)) {
+            return redirect()->to(base_url('admin/settings/users'))->with('error', 'You are not allowed to update this user.');
         }
 
         $newStatus = ((int)$user['status'] === 1) ? 0 : 1;
@@ -222,44 +260,128 @@ class UsersController extends BaseController
     private function allowedUserTypesForActor(string $actorType): array
     {
         return match ($actorType) {
-            'super_admin' => $this->validUserTypes,
-
-            // RHU-level can create within municipality scope
-            'admin' => ['staff', 'brgy_captain', 'brgy_secretary', 'bhw'],
-            'staff' => ['brgy_captain', 'brgy_secretary', 'bhw'],
-
-            // Barangay-level can create BHW only (adjust as needed)
-            'brgy_captain', 'brgy_secretary' => ['bhw'],
-
+            'super_admin' => ['super_admin', 'admin', 'staff', 'bhw', 'barangay_captain'],
+            'admin' => ['staff', 'bhw', 'barangay_captain'],
+            'staff' => ['bhw', 'barangay_captain'],
             default => [],
         };
+    }
+
+    private function canManageTargetUser(array $actor, array $target): bool
+    {
+        $actorType = (string)($actor['user_type'] ?? '');
+
+        if ($actorType === 'super_admin') {
+            return true;
+        }
+
+        if ($actorType === 'admin') {
+            return ($target['municipality_pcode'] ?? null) === ($actor['municipality_pcode'] ?? null)
+                && in_array(($target['user_type'] ?? ''), ['staff', 'bhw', 'barangay_captain'], true);
+        }
+
+        if ($actorType === 'staff') {
+            return ($target['barangay_pcode'] ?? null) === ($actor['barangay_pcode'] ?? null)
+                && in_array(($target['user_type'] ?? ''), ['bhw', 'barangay_captain'], true);
+        }
+
+        return false;
+    }
+
+    private function validateTargetScope(string $targetType, array $data): ?string
+    {
+        if ($targetType === 'admin' && empty($data['municipality_pcode'])) {
+            return 'Admin must be assigned to a municipality.';
+        }
+
+        if (in_array($targetType, ['staff', 'bhw', 'barangay_captain'], true) && empty($data['barangay_pcode'])) {
+            return 'This user type must be assigned to a barangay.';
+        }
+
+        return null;
+    }
+
+    private function applyLocationScopeByActorAndTarget(array $actor, string $targetType, array $post, array &$data): void
+    {
+        $actorType = (string)($actor['user_type'] ?? '');
+
+        if ($actorType === 'super_admin') {
+            $data['region_pcode']       = $post['region_pcode'] ?? null;
+            $data['province_pcode']     = $post['province_pcode'] ?? null;
+            $data['municipality_pcode'] = $post['municipality_pcode'] ?? null;
+            $data['barangay_pcode']     = $post['barangay_pcode'] ?? null;
+            return;
+        }
+
+        if ($actorType === 'admin') {
+            $data['region_pcode']       = $actor['region_pcode'] ?? null;
+            $data['province_pcode']     = $actor['province_pcode'] ?? null;
+            $data['municipality_pcode'] = $actor['municipality_pcode'] ?? null;
+            $data['barangay_pcode']     = $post['barangay_pcode'] ?? null;
+            return;
+        }
+
+        if ($actorType === 'staff') {
+            $data['region_pcode']       = $actor['region_pcode'] ?? null;
+            $data['province_pcode']     = $actor['province_pcode'] ?? null;
+            $data['municipality_pcode'] = $actor['municipality_pcode'] ?? null;
+            $data['barangay_pcode']     = $actor['barangay_pcode'] ?? null;
+            return;
+        }
     }
 
     private function locationLockForActor(array $actor): array
     {
         $type = (string)($actor['user_type'] ?? '');
 
-        // super_admin can assign any
         if ($type === 'super_admin') {
-            return ['region'=>null,'province'=>null,'municipality'=>null,'barangay'=>null];
-        }
-
-        // RHU admin/staff locked to municipality (and above if set)
-        if (in_array($type, ['admin', 'staff'], true)) {
             return [
-                'region' => $actor['region_pcode'] ?? null,
-                'province' => $actor['province_pcode'] ?? null,
-                'municipality' => $actor['municipality_pcode'] ?? null,
-                'barangay' => null,
+                'region_locked' => false,
+                'province_locked' => false,
+                'municipality_locked' => false,
+                'barangay_locked' => false,
+                'region_pcode' => null,
+                'province_pcode' => null,
+                'municipality_pcode' => null,
+                'barangay_pcode' => null,
             ];
         }
 
-        // Barangay roles locked to their barangay
+        if ($type === 'admin') {
+            return [
+                'region_locked' => true,
+                'province_locked' => true,
+                'municipality_locked' => true,
+                'barangay_locked' => false,
+                'region_pcode' => $actor['region_pcode'] ?? null,
+                'province_pcode' => $actor['province_pcode'] ?? null,
+                'municipality_pcode' => $actor['municipality_pcode'] ?? null,
+                'barangay_pcode' => null,
+            ];
+        }
+
+        if ($type === 'staff') {
+            return [
+                'region_locked' => true,
+                'province_locked' => true,
+                'municipality_locked' => true,
+                'barangay_locked' => true,
+                'region_pcode' => $actor['region_pcode'] ?? null,
+                'province_pcode' => $actor['province_pcode'] ?? null,
+                'municipality_pcode' => $actor['municipality_pcode'] ?? null,
+                'barangay_pcode' => $actor['barangay_pcode'] ?? null,
+            ];
+        }
+
         return [
-            'region' => $actor['region_pcode'] ?? null,
-            'province' => $actor['province_pcode'] ?? null,
-            'municipality' => $actor['municipality_pcode'] ?? null,
-            'barangay' => $actor['barangay_pcode'] ?? null,
+            'region_locked' => true,
+            'province_locked' => true,
+            'municipality_locked' => true,
+            'barangay_locked' => true,
+            'region_pcode' => $actor['region_pcode'] ?? null,
+            'province_pcode' => $actor['province_pcode'] ?? null,
+            'municipality_pcode' => $actor['municipality_pcode'] ?? null,
+            'barangay_pcode' => $actor['barangay_pcode'] ?? null,
         ];
     }
 }

@@ -15,7 +15,7 @@ $action = ($mode === 'edit' && $user)
   ? base_url('admin/settings/users/'.$user['id'])
   : base_url('admin/settings/users');
 
-$allowedUserTypes = $allowedUserTypes ?? ['super_admin','admin','staff','brgy_captain','brgy_secretary','bhw'];
+$allowedUserTypes = $allowedUserTypes ?? ['super_admin','admin','staff','bhw','barangay_captain'];
 
 // Location lock structure (from controller)
 $lock = $lock ?? [
@@ -252,7 +252,7 @@ $selBarangay = old('barangay_pcode', $user['barangay_pcode'] ?? ($lock['barangay
   };
 
   // User types that require barangay
-  const barangayTypes = ['brgy_captain','brgy_secretary','bhw'];
+  const barangayTypes = ['staff','bhw','barangay_captain'];
 
   function updateBarangayHint(){
     const t = (userTypeEl.value || '').trim();
