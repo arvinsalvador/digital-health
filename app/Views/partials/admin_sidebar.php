@@ -34,7 +34,7 @@
         </li>
 
         <li class="nav-item">
-          <a href="#" class="nav-link">
+          <a href="<?= base_url('admin/registry/household-map') ?>" class="nav-link">
             <i class="nav-icon fa-solid fa-map-location-dot"></i>
             <p>Map</p>
           </a>

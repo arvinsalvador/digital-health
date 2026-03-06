@@ -51,6 +51,8 @@ $routes->group('admin', ['filter' => 'auth'], function($routes){
         $routes->get('household-profiling/(:num)', 'Admin\HouseholdProfilingController::show/$1');
 
         $routes->get('household-profiling/search-members', 'Admin\HouseholdProfilingController::searchMembers');
+
+        $routes->get('household-map', 'Admin\HouseholdMapController::index');
     });
 });
 
