@@ -29,8 +29,8 @@ class HouseholdProfilingController extends BaseController
             ->orderBy('v.id', 'DESC');
 
         if (($actor['user_type'] ?? '') === 'super_admin') {
-            // no extra filter
-        } elseif (in_array(($actor['user_type'] ?? ''), ['admin', 'staff'], true)) {
+            // no filter
+        } elseif (($actor['user_type'] ?? '') === 'admin') {
             $builder->where('v.municipality_pcode', $actor['municipality_pcode'] ?? null);
         } else {
             $builder->where('v.barangay_pcode', $actor['barangay_pcode'] ?? null);
@@ -42,7 +42,7 @@ class HouseholdProfilingController extends BaseController
             'pageTitle' => 'Household Profiling',
             'visits' => $visits,
             'actor' => $actor,
-            'canDelete' => in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin'], true),
+            'canDelete' => in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin', 'staff'], true),
         ]);
     }
 
@@ -112,6 +112,30 @@ class HouseholdProfilingController extends BaseController
 
             'remarks' => trim($post['remarks'] ?? '') ?: null,
         ];
+
+        if ($this->profilingNeedsStaffApproval()) {
+            $visitPayload['approval_status'] = 'pending_staff_approval';
+            $visitPayload['approval_action'] = 'create';
+            $visitPayload['submitted_by_user_id'] = $actor['id'] ?? null;
+            $visitPayload['approved_by_user_id'] = null;
+            $visitPayload['approved_at'] = null;
+            $visitPayload['rejected_by_user_id'] = null;
+            $visitPayload['rejected_at'] = null;
+            $visitPayload['approval_remarks'] = null;
+            $visitPayload['pending_delete_requested_by'] = null;
+            $visitPayload['pending_delete_requested_at'] = null;
+        } else {
+            $visitPayload['approval_status'] = 'approved';
+            $visitPayload['approval_action'] = null;
+            $visitPayload['submitted_by_user_id'] = $actor['id'] ?? null;
+            $visitPayload['approved_by_user_id'] = $actor['id'] ?? null;
+            $visitPayload['approved_at'] = date('Y-m-d H:i:s');
+            $visitPayload['rejected_by_user_id'] = null;
+            $visitPayload['rejected_at'] = null;
+            $visitPayload['approval_remarks'] = null;
+            $visitPayload['pending_delete_requested_by'] = null;
+            $visitPayload['pending_delete_requested_at'] = null;
+        }
 
         $visitPayload = $this->applyLocationLocksToPayload($actor, $visitPayload);
 
@@ -274,7 +298,30 @@ class HouseholdProfilingController extends BaseController
 
         $payload = $this->applyLocationLocksToPayload($actor, $payload);
 
-        // IMPORTANT: build history map BEFORE deleting old members
+        if ($this->profilingNeedsStaffApproval()) {
+            $payload['approval_status'] = 'pending_staff_approval';
+            $payload['approval_action'] = 'edit';
+            $payload['submitted_by_user_id'] = $actor['id'] ?? null;
+            $payload['approved_by_user_id'] = null;
+            $payload['approved_at'] = null;
+            $payload['rejected_by_user_id'] = null;
+            $payload['rejected_at'] = null;
+            $payload['approval_remarks'] = null;
+            $payload['pending_delete_requested_by'] = null;
+            $payload['pending_delete_requested_at'] = null;
+        } else {
+            $payload['approval_status'] = 'approved';
+            $payload['approval_action'] = null;
+            $payload['submitted_by_user_id'] = $actor['id'] ?? null;
+            $payload['approved_by_user_id'] = $actor['id'] ?? null;
+            $payload['approved_at'] = date('Y-m-d H:i:s');
+            $payload['rejected_by_user_id'] = null;
+            $payload['rejected_at'] = null;
+            $payload['approval_remarks'] = null;
+            $payload['pending_delete_requested_by'] = null;
+            $payload['pending_delete_requested_at'] = null;
+        }
+
         $historyMap = [];
 
         if (is_array($groups)) {
@@ -340,7 +387,7 @@ class HouseholdProfilingController extends BaseController
     {
         $actor = $this->actor();
 
-        if (! in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin'], true)) {
+        if (! in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin', 'staff'], true)) {
             return redirect()->to(base_url('admin/registry/household-profiling'))
                 ->with('error', 'You are not allowed to delete profiling records.');
         }
@@ -360,6 +407,18 @@ class HouseholdProfilingController extends BaseController
         if (! $this->canAccessVisit($actor, $visit)) {
             return redirect()->to(base_url('admin/registry/household-profiling'))
                 ->with('error', 'Not allowed.');
+        }
+
+        if ($this->profilingDeleteNeedsAdminApproval()) {
+            $visitModel->update($id, [
+                'approval_status' => 'pending_admin_delete_approval',
+                'approval_action' => 'delete',
+                'pending_delete_requested_by' => $actor['id'] ?? null,
+                'pending_delete_requested_at' => date('Y-m-d H:i:s'),
+            ]);
+
+            return redirect()->to(base_url('admin/registry/household-profiling'))
+                ->with('success', 'Delete request submitted for admin approval.');
         }
 
         $db = \Config\Database::connect();
@@ -413,14 +472,12 @@ class HouseholdProfilingController extends BaseController
 
         if (($actor['user_type'] ?? '') === 'super_admin') {
             // no filter
-        } elseif (in_array(($actor['user_type'] ?? ''), ['admin', 'staff'], true)) {
+        } elseif (($actor['user_type'] ?? '') === 'admin') {
             if (! empty($actor['municipality_pcode'])) {
                 $builder->where('v.municipality_pcode', $actor['municipality_pcode']);
             }
         } else {
-            if (! empty($actor['municipality_pcode'])) {
-                $builder->where('v.municipality_pcode', $actor['municipality_pcode']);
-            } elseif (! empty($actor['barangay_pcode'])) {
+            if (! empty($actor['barangay_pcode'])) {
                 $builder->where('v.barangay_pcode', $actor['barangay_pcode']);
             }
         }
@@ -815,7 +872,7 @@ class HouseholdProfilingController extends BaseController
 
         if ($type === 'super_admin') return true;
 
-        if (in_array($type, ['admin', 'staff'], true)) {
+        if ($type === 'admin') {
             return ! empty($actor['municipality_pcode']) && ($visit['municipality_pcode'] ?? null) === $actor['municipality_pcode'];
         }
 
@@ -835,7 +892,7 @@ class HouseholdProfilingController extends BaseController
             ];
         }
 
-        if (in_array($type, ['admin', 'staff'], true)) {
+        if ($type === 'admin') {
             return [
                 'municipality_locked' => true,
                 'barangay_locked' => false,
@@ -860,7 +917,7 @@ class HouseholdProfilingController extends BaseController
             return $payload;
         }
 
-        if (in_array($type, ['admin', 'staff'], true)) {
+        if ($type === 'admin') {
             $payload['municipality_pcode'] = $actor['municipality_pcode'] ?? $payload['municipality_pcode'] ?? null;
             return $payload;
         }

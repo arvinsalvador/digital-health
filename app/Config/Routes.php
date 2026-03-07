@@ -46,6 +46,13 @@ $routes->group('admin', ['filter' => 'auth'], function($routes){
     // REGISTRY
     $routes->group('registry', function($routes){
 
+        // Approval queue
+        $routes->get('household-profiling/approvals', 'Admin\HouseholdProfilingApprovalController::index');
+        $routes->post('household-profiling/(:num)/approve', 'Admin\HouseholdProfilingApprovalController::approve/$1');
+        $routes->post('household-profiling/(:num)/reject', 'Admin\HouseholdProfilingApprovalController::reject/$1');
+        $routes->post('household-profiling/(:num)/approve-delete', 'Admin\HouseholdProfilingApprovalController::approveDelete/$1');
+        $routes->post('household-profiling/(:num)/reject-delete', 'Admin\HouseholdProfilingApprovalController::rejectDelete/$1');
+
         // Household Profiling
         $routes->get('household-profiling', 'Admin\HouseholdProfilingController::index');
         $routes->get('household-profiling/create', 'Admin\HouseholdProfilingController::create');

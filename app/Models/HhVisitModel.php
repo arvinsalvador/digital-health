@@ -36,6 +36,17 @@ class HhVisitModel extends Model
         'water_source',
         'water_source_other',
         'toilet_facility',
-        'remarks'
+        'remarks',
+
+        'approval_status',
+        'approval_action',
+        'submitted_by_user_id',
+        'approved_by_user_id',
+        'approved_at',
+        'rejected_by_user_id',
+        'rejected_at',
+        'approval_remarks',
+        'pending_delete_requested_by',
+        'pending_delete_requested_at',
     ];
 }

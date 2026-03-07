@@ -97,4 +97,24 @@ abstract class BaseController extends Controller
             || $this->isBhw()
             || $this->isBarangayCaptain();
     }
+
+    protected function canApproveProfilingFromBarangayUsers(): bool
+    {
+        return $this->isSuperAdmin() || $this->isAdmin() || $this->isStaff();
+    }
+
+    protected function canApproveStaffDelete(): bool
+    {
+        return $this->isSuperAdmin() || $this->isAdmin();
+    }
+
+    protected function profilingNeedsStaffApproval(): bool
+    {
+        return $this->isBhw() || $this->isBarangayCaptain();
+    }
+
+    protected function profilingDeleteNeedsAdminApproval(): bool
+    {
+        return $this->isStaff();
+    }
 }
