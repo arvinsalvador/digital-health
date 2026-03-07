@@ -50,6 +50,8 @@ writable/uploads/*
 writable/debugbar/*
 !writable/debugbar/index.html
 
+writable/session/*
+
 php_errors.log
 
 # =====================================================
