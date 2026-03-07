@@ -50,6 +50,7 @@ class UsersController extends BaseController
             'users' => $users,
             'actor' => $actor,
             'currentUserName' => $this->currentUserName(),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 
@@ -70,6 +71,7 @@ class UsersController extends BaseController
             'allowedUserTypes' => $this->allowedUserTypesForActor((string)($actor['user_type'] ?? '')),
             'lock' => $this->locationLockForActor($actor),
             'currentUserName' => $this->currentUserName(),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 
@@ -93,8 +95,11 @@ class UsersController extends BaseController
             'user_type'  => 'required|in_list[' . implode(',', $this->validUserTypes) . ']',
         ];
 
+        
         if (! $this->validate($rules)) {
-            return redirect()->back()->withInput()->with('error', 'Please check the form fields.');
+            return redirect()->back()
+                ->withInput()
+                ->with('error', implode(' ', $this->validator->getErrors()));
         }
 
         $targetType = (string)($post['user_type'] ?? '');
@@ -162,6 +167,7 @@ class UsersController extends BaseController
             'allowedUserTypes' => $this->allowedUserTypesForActor((string)($actor['user_type'] ?? '')),
             'lock' => $this->locationLockForActor($actor),
             'currentUserName' => $this->currentUserName(),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 
@@ -194,7 +200,9 @@ class UsersController extends BaseController
         ];
 
         if (! $this->validate($rules)) {
-            return redirect()->back()->withInput()->with('error', 'Please check the form fields.');
+            return redirect()->back()
+                ->withInput()
+                ->with('error', implode(' ', $this->validator->getErrors()));
         }
 
         $targetType = (string)($post['user_type'] ?? '');

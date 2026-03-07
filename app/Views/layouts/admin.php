@@ -15,6 +15,12 @@
   <link rel="stylesheet" href="<?= base_url('adminlte/dist/css/adminlte.min.css') ?>">
 
   <?= $this->renderSection('styles') ?>
+  <style>
+    .nav-sidebar .badge {
+      font-size: 11px;
+      vertical-align: middle;
+    }
+  </style>
 </head>
 
 <body class="layout-fixed sidebar-expand-lg bg-body-tertiary">

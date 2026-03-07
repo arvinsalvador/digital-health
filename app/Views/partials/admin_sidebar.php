@@ -43,13 +43,38 @@
           </a>
         </li>
 
-        <?php if (in_array($userType, ['super_admin', 'admin', 'staff'], true)): ?>
-          <li class="nav-item">
+        <!-- <?php if (in_array($userType, ['super_admin', 'admin', 'staff'], true)): ?>
+           <li class="nav-item">
             <a href="<?= base_url('admin/registry/household-profiling/approvals') ?>" class="nav-link">
               <i class="nav-icon fa-solid fa-clipboard-check"></i>
               <p>Profiling Approvals</p>
             </a>
+          </li> 
+          <li class="nav-item">
+            <a href="<?= base_url('admin/registry/household-profiling-requests') ?>" class="nav-link">
+              <i class="nav-icon fa-solid fa-clipboard-list"></i>
+              <p>Profiling Requests</p>
+            </a>
           </li>
+        <?php endif; ?> -->
+
+        <?php
+          $pendingProfilingRequestCount = $pendingProfilingRequestCount ?? 0;
+          $showProfilingRequestMenu = in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin', 'staff'], true);
+        ?>
+
+        <?php if ($showProfilingRequestMenu): ?>
+        <li class="nav-item">
+          <a href="<?= base_url('admin/registry/household-profiling-requests') ?>" class="nav-link">
+            <i class="nav-icon fa-solid fa-clipboard-list"></i>
+            <p>
+              Profiling Requests
+              <?php if ($pendingProfilingRequestCount > 0): ?>
+                <span class="badge bg-danger ms-2"><?= (int) $pendingProfilingRequestCount ?></span>
+              <?php endif; ?>
+            </p>
+          </a>
+        </li>
         <?php endif; ?>
 
         <?php if ($canViewMap): ?>

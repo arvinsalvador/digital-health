@@ -83,6 +83,7 @@ class HouseholdMapController extends BaseController
             'actor' => $actor,
             'markers' => $markers,
             'markerCount' => count($markers),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 

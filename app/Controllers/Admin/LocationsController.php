@@ -25,6 +25,7 @@ class LocationsController extends BaseController
             'pageTitle' => 'Locations',
             'actor' => $actor,
             'currentUserName' => $this->currentUserName(),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 

@@ -13,6 +13,7 @@ class DashboardController extends BaseController
             'pageTitle' => 'Dashboard',
             'currentUserName' => $this->currentUserName(),
             'actor' => $this->actor(),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 }

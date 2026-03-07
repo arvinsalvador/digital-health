@@ -50,6 +50,7 @@ class HouseholdProfilingApprovalController extends BaseController
             'pageTitle' => 'Profiling Approvals',
             'rows' => $rows,
             'actor' => $actor,
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 

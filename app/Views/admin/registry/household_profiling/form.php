@@ -11,6 +11,7 @@
   $groups = $groups ?? [];
   $actor = $actor ?? [];
   $lock  = $lock ?? ['municipality_locked'=>false,'barangay_locked'=>false,'municipality_pcode'=>'','barangay_pcode'=>''];
+  $lockedBarangayName = $lockedBarangayName ?? '';
 
   $displayVisitDate = $mode === 'create'
     ? date('Y-m-d')
@@ -162,8 +163,13 @@
         <div class="col-md-4">
           <label class="form-label">Barangay</label>
           <select class="form-select" name="barangay_pcode" id="barangay_pcode" <?= !empty($lock['barangay_locked']) ? 'disabled' : '' ?> required>
-            <option value="">Loading...</option>
+            <?php if (!empty($lock['barangay_locked']) && !empty($oldBarangay)): ?>
+              <option value="<?= esc($oldBarangay) ?>" selected><?= esc($lockedBarangayName ?: $oldBarangay) ?></option>
+            <?php else: ?>
+              <option value="">Loading...</option>
+            <?php endif; ?>
           </select>
+
           <?php if (!empty($lock['barangay_locked'])): ?>
             <input type="hidden" name="barangay_pcode" value="<?= esc($oldBarangay) ?>">
             <div class="form-text">Barangay is locked based on your assigned scope.</div>
@@ -484,6 +490,7 @@
 <script>
 (function(){
   const isSuperAdmin = <?= json_encode($isSuperAdmin) ?>;
+  const barangayLocked = <?= json_encode(!empty($lock['barangay_locked'])) ?>;
   const municipalitySelect = document.getElementById('municipality_pcode');
   const selectedMunicipality = <?= json_encode($oldMunicipal) ?>;
   const brgySelect = document.getElementById('barangay_pcode');
@@ -544,8 +551,11 @@
     });
   }
 
-  if (isSuperAdmin) loadMunicipalities();
-  else loadBarangays();
+  if (isSuperAdmin) {
+    loadMunicipalities();
+  } else if (!barangayLocked) {
+    loadBarangays();
+  }
 
   function computeQuarter(dateStr){
     if (!dateStr) return '';
@@ -785,8 +795,6 @@
   }
 
   function memberRowTemplate(gIndex, mIndex, data){
-    //const med = Array.isArray(data.medical_history) ? data.medical_history : [];
-    // const has = (x) => med.includes(x) ? 'checked' : '';
     const linked = !!data.linked_member_id;
     const medicalHistories = Array.isArray(data.medical_histories) ? data.medical_histories : [];
 
@@ -1387,7 +1395,6 @@
 
   function openEditMedicalHistoryModal(memberId, button) {
     resetMedicalHistoryForm();
-
     document.getElementById('mh_member_id').value = memberId;
     document.getElementById('mh_history_id').value = button.dataset.historyId || '';
     document.getElementById('mh_condition_name').value = button.dataset.condition || '';
@@ -1395,7 +1402,6 @@
     document.getElementById('mh_status').value = button.dataset.status || '';
     document.getElementById('mh_remarks').value = button.dataset.remarks || '';
     document.getElementById('medicalHistoryModalTitle').textContent = 'Edit Medical History';
-
     medicalHistoryModal.show();
   }
 

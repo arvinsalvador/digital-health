@@ -6,6 +6,7 @@ use CodeIgniter\Controller;
 use CodeIgniter\HTTP\RequestInterface;
 use CodeIgniter\HTTP\ResponseInterface;
 use Psr\Log\LoggerInterface;
+use App\Models\HhVisitChangeRequestModel;
 
 abstract class BaseController extends Controller
 {
@@ -116,5 +117,31 @@ abstract class BaseController extends Controller
     protected function profilingDeleteNeedsAdminApproval(): bool
     {
         return $this->isStaff();
+    }
+
+    protected function pendingProfilingRequestCount(array $actor): int
+    {
+        $actorType = (string) ($actor['user_type'] ?? '');
+
+        if (! in_array($actorType, ['super_admin', 'admin', 'staff'], true)) {
+            return 0;
+        }
+
+        $model = new HhVisitChangeRequestModel();
+        $builder = $model->builder();
+
+        $builder->where('status', 'pending');
+
+        if ($actorType === 'super_admin') {
+            // all pending requests
+        } elseif ($actorType === 'admin') {
+            $builder->where('review_level', 'admin');
+            $builder->where('municipality_pcode', $actor['municipality_pcode'] ?? null);
+        } elseif ($actorType === 'staff') {
+            $builder->where('review_level', 'staff');
+            $builder->where('barangay_pcode', $actor['barangay_pcode'] ?? null);
+        }
+
+        return (int) $builder->countAllResults();
     }
 }

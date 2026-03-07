@@ -50,4 +50,21 @@ class Services extends BaseService
         return new ModuleBootstrapService();
     }
 
+    public static function hhVisitChangeRequestBuilder($getShared = true)
+    {
+        if ($getShared) {
+            return static::getSharedInstance('hhVisitChangeRequestBuilder');
+        }
+
+        return new \App\Libraries\HhVisitChangeRequestBuilder();
+    }
+
+    public static function hhVisitLiveApplyService($getShared = true)
+    {
+        if ($getShared) {
+            return static::getSharedInstance('hhVisitLiveApplyService');
+        }
+
+        return new \App\Libraries\HhVisitLiveApplyService();
+    }
 }

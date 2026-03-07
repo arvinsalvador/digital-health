@@ -74,6 +74,11 @@ $routes->group('admin', ['filter' => 'auth'], function($routes){
 
         // Household Map Page
         $routes->get('household-map', 'Admin\HouseholdMapController::index');
+
+        $routes->get('household-profiling-requests', 'Admin\HouseholdProfilingRequestController::index');
+        $routes->get('household-profiling-requests/(:num)', 'Admin\HouseholdProfilingRequestController::show/$1');
+        $routes->post('household-profiling-requests/(:num)/approve', 'Admin\HouseholdProfilingRequestController::approve/$1');
+        $routes->post('household-profiling-requests/(:num)/reject', 'Admin\HouseholdProfilingRequestController::reject/$1');
     });
 
 });

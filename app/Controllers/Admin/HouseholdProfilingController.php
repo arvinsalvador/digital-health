@@ -9,6 +9,7 @@ use App\Models\HhFamilyGroupModel;
 use App\Models\HhGroupMemberModel;
 use App\Models\HhGroupMemberQuarterModel;
 use App\Models\HhGroupMemberMedicalHistoryModel;
+use App\Models\HhVisitChangeRequestModel;
 
 class HouseholdProfilingController extends BaseController
 {
@@ -43,6 +44,7 @@ class HouseholdProfilingController extends BaseController
             'visits' => $visits,
             'actor' => $actor,
             'canDelete' => in_array(($actor['user_type'] ?? ''), ['super_admin', 'admin', 'staff'], true),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 
@@ -57,6 +59,8 @@ class HouseholdProfilingController extends BaseController
             'groups' => [],
             'actor' => $actor,
             'lock' => $this->locationLockForActor($actor),
+            'lockedBarangayName' => $this->areaNameByPcode($actor['barangay_pcode'] ?? null),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 
@@ -113,38 +117,37 @@ class HouseholdProfilingController extends BaseController
             'remarks' => trim($post['remarks'] ?? '') ?: null,
         ];
 
+        $visitPayload = $this->applyLocationLocksToPayload($actor, $visitPayload);
+
+        // Barangay-level users create change requests only
         if ($this->profilingNeedsStaffApproval()) {
-            $visitPayload['approval_status'] = 'pending_staff_approval';
-            $visitPayload['approval_action'] = 'create';
-            $visitPayload['submitted_by_user_id'] = $actor['id'] ?? null;
-            $visitPayload['approved_by_user_id'] = null;
-            $visitPayload['approved_at'] = null;
-            $visitPayload['rejected_by_user_id'] = null;
-            $visitPayload['rejected_at'] = null;
-            $visitPayload['approval_remarks'] = null;
-            $visitPayload['pending_delete_requested_by'] = null;
-            $visitPayload['pending_delete_requested_at'] = null;
-        } else {
-            $visitPayload['approval_status'] = 'approved';
-            $visitPayload['approval_action'] = null;
-            $visitPayload['submitted_by_user_id'] = $actor['id'] ?? null;
-            $visitPayload['approved_by_user_id'] = $actor['id'] ?? null;
-            $visitPayload['approved_at'] = date('Y-m-d H:i:s');
-            $visitPayload['rejected_by_user_id'] = null;
-            $visitPayload['rejected_at'] = null;
-            $visitPayload['approval_remarks'] = null;
-            $visitPayload['pending_delete_requested_by'] = null;
-            $visitPayload['pending_delete_requested_at'] = null;
+            $builder = service('hhVisitChangeRequestBuilder');
+            $requestModel = new HhVisitChangeRequestModel();
+
+            $requestData = $builder->buildCreateRequest($actor, $visitPayload, $groups ?: []);
+            $requestModel->insert($requestData);
+
+            return redirect()->to(base_url('admin/registry/household-profiling'))
+                ->with('success', 'New record submitted for review.');
         }
 
-        $visitPayload = $this->applyLocationLocksToPayload($actor, $visitPayload);
+        // Admin / SuperAdmin write directly to live tables
+        $visitPayload['approval_status'] = 'approved';
+        $visitPayload['approval_action'] = null;
+        $visitPayload['submitted_by_user_id'] = $actor['id'] ?? null;
+        $visitPayload['approved_by_user_id'] = $actor['id'] ?? null;
+        $visitPayload['approved_at'] = date('Y-m-d H:i:s');
+        $visitPayload['rejected_by_user_id'] = null;
+        $visitPayload['rejected_at'] = null;
+        $visitPayload['approval_remarks'] = null;
+        $visitPayload['pending_delete_requested_by'] = null;
+        $visitPayload['pending_delete_requested_at'] = null;
 
         $visitModel = new HhVisitModel();
         $db = \Config\Database::connect();
         $db->transStart();
 
         $visitId = $visitModel->insert($visitPayload, true);
-
         $this->insertGroupsForVisit($visitId, $visitDate, $groups ?: [], []);
 
         $db->transComplete();
@@ -221,6 +224,8 @@ class HouseholdProfilingController extends BaseController
             'groups' => $groups,
             'actor' => $actor,
             'lock' => $this->locationLockForActor($actor),
+            'lockedBarangayName' => $this->areaNameByPcode($visit['barangay_pcode'] ?? ($actor['barangay_pcode'] ?? null)),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 
@@ -290,7 +295,6 @@ class HouseholdProfilingController extends BaseController
 
         if ($submitAction === 'update_visit') {
             $quarter = $this->quarterFromDate($submittedVisitDate);
-
             $payload['last_visit_date'] = $submittedVisitDate;
             $payload['visit_count'] = ((int) ($visit['visit_count'] ?? 1)) + 1;
             $payload['visit_quarter'] = $quarter;
@@ -298,29 +302,29 @@ class HouseholdProfilingController extends BaseController
 
         $payload = $this->applyLocationLocksToPayload($actor, $payload);
 
+        // Barangay-level users submit update requests only
         if ($this->profilingNeedsStaffApproval()) {
-            $payload['approval_status'] = 'pending_staff_approval';
-            $payload['approval_action'] = 'edit';
-            $payload['submitted_by_user_id'] = $actor['id'] ?? null;
-            $payload['approved_by_user_id'] = null;
-            $payload['approved_at'] = null;
-            $payload['rejected_by_user_id'] = null;
-            $payload['rejected_at'] = null;
-            $payload['approval_remarks'] = null;
-            $payload['pending_delete_requested_by'] = null;
-            $payload['pending_delete_requested_at'] = null;
-        } else {
-            $payload['approval_status'] = 'approved';
-            $payload['approval_action'] = null;
-            $payload['submitted_by_user_id'] = $actor['id'] ?? null;
-            $payload['approved_by_user_id'] = $actor['id'] ?? null;
-            $payload['approved_at'] = date('Y-m-d H:i:s');
-            $payload['rejected_by_user_id'] = null;
-            $payload['rejected_at'] = null;
-            $payload['approval_remarks'] = null;
-            $payload['pending_delete_requested_by'] = null;
-            $payload['pending_delete_requested_at'] = null;
+            $builder = service('hhVisitChangeRequestBuilder');
+            $requestModel = new HhVisitChangeRequestModel();
+
+            $requestData = $builder->buildUpdateRequest($actor, $id, $visit, $payload, $groups ?: []);
+            $requestModel->insert($requestData);
+
+            return redirect()->to(base_url('admin/registry/household-profiling'))
+                ->with('success', 'Update request submitted for review.');
         }
+
+        // Admin / SuperAdmin update live record directly
+        $payload['approval_status'] = 'approved';
+        $payload['approval_action'] = null;
+        $payload['submitted_by_user_id'] = $actor['id'] ?? null;
+        $payload['approved_by_user_id'] = $actor['id'] ?? null;
+        $payload['approved_at'] = date('Y-m-d H:i:s');
+        $payload['rejected_by_user_id'] = null;
+        $payload['rejected_at'] = null;
+        $payload['approval_remarks'] = null;
+        $payload['pending_delete_requested_by'] = null;
+        $payload['pending_delete_requested_at'] = null;
 
         $historyMap = [];
 
@@ -409,18 +413,19 @@ class HouseholdProfilingController extends BaseController
                 ->with('error', 'Not allowed.');
         }
 
+        // Staff create delete request only
         if ($this->profilingDeleteNeedsAdminApproval()) {
-            $visitModel->update($id, [
-                'approval_status' => 'pending_admin_delete_approval',
-                'approval_action' => 'delete',
-                'pending_delete_requested_by' => $actor['id'] ?? null,
-                'pending_delete_requested_at' => date('Y-m-d H:i:s'),
-            ]);
+            $builder = service('hhVisitChangeRequestBuilder');
+            $requestModel = new HhVisitChangeRequestModel();
+
+            $requestData = $builder->buildDeleteRequest($actor, $id, $visit);
+            $requestModel->insert($requestData);
 
             return redirect()->to(base_url('admin/registry/household-profiling'))
                 ->with('success', 'Delete request submitted for admin approval.');
         }
 
+        // Admin / SuperAdmin delete directly
         $db = \Config\Database::connect();
         $db->transStart();
 
@@ -955,6 +960,22 @@ class HouseholdProfilingController extends BaseController
             'C'  => 'live_in',
             default => null,
         };
+    }
+
+    private function areaNameByPcode(?string $pcode): string
+    {
+        if (! $pcode) {
+            return '';
+        }
+
+        $db = \Config\Database::connect();
+        $row = $db->table('admin_areas')
+            ->select('name')
+            ->where('pcode', $pcode)
+            ->get()
+            ->getRowArray();
+
+        return $row['name'] ?? '';
     }
 
     public function medicalHistories(int $memberId)

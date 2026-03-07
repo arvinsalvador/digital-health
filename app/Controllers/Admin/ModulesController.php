@@ -28,6 +28,7 @@ class ModulesController extends BaseController
             'pageTitle' => 'Modules',
             'actor' => $actor,
             'currentUserName' => $this->currentUserName(),
+            'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
     }
 
