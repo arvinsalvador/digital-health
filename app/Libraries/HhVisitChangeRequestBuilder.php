@@ -15,6 +15,42 @@ class HhVisitChangeRequestBuilder
             'groups' => $groups,
         ];
 
+        $groupChanges = [];
+        $memberChanges = [];
+        $medicalHistoryChanges = [];
+        $summaryItems = ['New record submitted'];
+
+        foreach ($groups as $group) {
+            $groupChanges[] = [
+                'type' => 'added_group',
+                'group_name' => $group['group_name'] ?? null,
+                'living_status' => $group['living_status'] ?? null,
+            ];
+            $summaryItems[] = 'Added family group';
+
+            foreach (($group['members'] ?? []) as $member) {
+                $memberChanges[] = [
+                    'type' => 'added_member',
+                    'group_id' => $group['id'] ?? null,
+                    'member_name' => $this->memberDisplayName($member),
+                ];
+                $summaryItems[] = 'Added family member';
+
+                foreach (($member['medical_histories'] ?? []) as $mh) {
+                    $medicalHistoryChanges[] = [
+                        'type' => 'added_medical_history',
+                        'group_id' => $group['id'] ?? null,
+                        'member_id' => $member['id'] ?? null,
+                        'member_name' => $this->memberDisplayName($member),
+                        'condition_name' => $mh['condition_name'] ?? null,
+                    ];
+                    $summaryItems[] = 'Added medical history';
+                }
+            }
+        }
+
+        $summaryItems = array_values(array_unique($summaryItems));
+
         return [
             'target_visit_id' => null,
             'request_type' => 'create',
@@ -27,11 +63,11 @@ class HhVisitChangeRequestBuilder
             'change_payload_json' => json_encode($fullPayload, JSON_UNESCAPED_UNICODE),
             'diff_payload_json' => json_encode([
                 'type' => 'create',
-                'summary_items' => ['New record submitted'],
+                'summary_items' => $summaryItems,
                 'visit_fields' => [],
-                'groups' => [],
-                'members' => [],
-                'medical_histories' => [],
+                'groups' => $groupChanges,
+                'members' => $memberChanges,
+                'medical_histories' => $medicalHistoryChanges,
             ], JSON_UNESCAPED_UNICODE),
         ];
     }

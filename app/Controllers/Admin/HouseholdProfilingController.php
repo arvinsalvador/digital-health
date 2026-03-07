@@ -48,6 +48,156 @@ class HouseholdProfilingController extends BaseController
         ]);
     }
 
+    private function buildChangeRequestSummary(string $requestType, array $diffPayload = []): string
+    {
+        if ($requestType === 'create') {
+            return 'New household profiling record.';
+        }
+
+        if ($requestType === 'delete') {
+            return 'Delete household profiling record.';
+        }
+
+        $parts = [];
+
+        $visitFields = $diffPayload['visit_fields'] ?? [];
+        if (!empty($visitFields) && is_array($visitFields)) {
+            $fieldLabels = [];
+            foreach (array_keys($visitFields) as $field) {
+                $fieldLabels[] = $this->humanizeFieldLabel((string) $field);
+            }
+
+            if (!empty($fieldLabels)) {
+                $parts[] = implode(', ', $fieldLabels) . ' updated';
+            }
+        }
+
+        $groups = $diffPayload['groups'] ?? [];
+        if (!empty($groups) && is_array($groups)) {
+            $added = 0;
+            $updated = 0;
+            $removed = 0;
+
+            foreach ($groups as $g) {
+                $type = (string) ($g['type'] ?? '');
+                if ($type === 'added_group') {
+                    $added++;
+                } elseif ($type === 'updated_group') {
+                    $updated++;
+                } elseif ($type === 'removed_group') {
+                    $removed++;
+                }
+            }
+
+            if ($added > 0) {
+                $parts[] = $added . ' family group added';
+            }
+            if ($updated > 0) {
+                $parts[] = $updated . ' family group updated';
+            }
+            if ($removed > 0) {
+                $parts[] = $removed . ' family group removed';
+            }
+        }
+
+        $members = $diffPayload['members'] ?? [];
+        if (!empty($members) && is_array($members)) {
+            $added = 0;
+            $updated = 0;
+            $removed = 0;
+
+            foreach ($members as $m) {
+                $type = (string) ($m['type'] ?? '');
+                if ($type === 'added_member') {
+                    $added++;
+                } elseif ($type === 'updated_member') {
+                    $updated++;
+                } elseif ($type === 'removed_member') {
+                    $removed++;
+                }
+            }
+
+            if ($added > 0) {
+                $parts[] = $added . ' member added';
+            }
+            if ($updated > 0) {
+                $parts[] = $updated . ' member updated';
+            }
+            if ($removed > 0) {
+                $parts[] = $removed . ' member removed';
+            }
+        }
+
+        $medicalHistories = $diffPayload['medical_histories'] ?? [];
+        if (!empty($medicalHistories) && is_array($medicalHistories)) {
+            $added = 0;
+            $updated = 0;
+            $removed = 0;
+
+            foreach ($medicalHistories as $mh) {
+                $type = (string) ($mh['type'] ?? '');
+                if ($type === 'added_medical_history') {
+                    $added++;
+                } elseif ($type === 'updated_medical_history') {
+                    $updated++;
+                } elseif ($type === 'removed_medical_history') {
+                    $removed++;
+                }
+            }
+
+            if ($added > 0) {
+                $parts[] = $added . ' medical history added';
+            }
+            if ($updated > 0) {
+                $parts[] = $updated . ' medical history updated';
+            }
+            if ($removed > 0) {
+                $parts[] = $removed . ' medical history removed';
+            }
+        }
+
+        if (empty($parts)) {
+            return 'Household profiling record updated.';
+        }
+
+        return ucfirst(implode('; ', $parts)) . '.';
+    }
+
+    private function humanizeFieldLabel(string $field): string
+    {
+        $map = [
+            'visit_date' => 'Visit date',
+            'visit_quarter' => 'Visit quarter',
+            'municipality_pcode' => 'Municipality',
+            'barangay_pcode' => 'Barangay',
+            'sitio_purok' => 'Sitio/Purok',
+            'household_no' => 'Household number',
+            'household_latitude' => 'Latitude',
+            'household_longitude' => 'Longitude',
+            'geo_source' => 'Location source',
+            'geo_accuracy_m' => 'Location accuracy',
+            'respondent_last_name' => 'Respondent last name',
+            'respondent_first_name' => 'Respondent first name',
+            'respondent_middle_name' => 'Respondent middle name',
+            'respondent_relation' => 'Respondent relation',
+            'respondent_relation_other' => 'Respondent relation other',
+            'ethnicity_mode' => 'Ethnicity',
+            'ethnicity_tribe' => 'Tribe',
+            'socioeconomic_status' => 'Socioeconomic status',
+            'nhts_no' => 'NHTS number',
+            'water_source' => 'Water source',
+            'water_source_other' => 'Water source other',
+            'toilet_facility' => 'Toilet facility',
+            'remarks' => 'Remarks',
+        ];
+
+        if (isset($map[$field])) {
+            return $map[$field];
+        }
+
+        return ucwords(str_replace('_', ' ', $field));
+    }
+
     public function create()
     {
         $actor = $this->actor();
@@ -59,6 +209,7 @@ class HouseholdProfilingController extends BaseController
             'groups' => [],
             'actor' => $actor,
             'lock' => $this->locationLockForActor($actor),
+            'lockedMunicipalityName' => $this->areaNameByPcode($actor['municipality_pcode'] ?? null),
             'lockedBarangayName' => $this->areaNameByPcode($actor['barangay_pcode'] ?? null),
             'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
@@ -119,19 +270,25 @@ class HouseholdProfilingController extends BaseController
 
         $visitPayload = $this->applyLocationLocksToPayload($actor, $visitPayload);
 
-        // Barangay-level users create change requests only
         if ($this->profilingNeedsStaffApproval()) {
             $builder = service('hhVisitChangeRequestBuilder');
             $requestModel = new HhVisitChangeRequestModel();
 
             $requestData = $builder->buildCreateRequest($actor, $visitPayload, $groups ?: []);
+
+            $diffPayload = json_decode($requestData['diff_payload_json'] ?? '[]', true);
+            if (!is_array($diffPayload)) {
+                $diffPayload = [];
+            }
+
+            $requestData['summary_text'] = $this->buildChangeRequestSummary('create', $diffPayload);
+
             $requestModel->insert($requestData);
 
             return redirect()->to(base_url('admin/registry/household-profiling'))
                 ->with('success', 'New record submitted for review.');
         }
 
-        // Admin / SuperAdmin write directly to live tables
         $visitPayload['approval_status'] = 'approved';
         $visitPayload['approval_action'] = null;
         $visitPayload['submitted_by_user_id'] = $actor['id'] ?? null;
@@ -224,6 +381,7 @@ class HouseholdProfilingController extends BaseController
             'groups' => $groups,
             'actor' => $actor,
             'lock' => $this->locationLockForActor($actor),
+            'lockedMunicipalityName' => $this->areaNameByPcode($visit['municipality_pcode'] ?? ($actor['municipality_pcode'] ?? null)),
             'lockedBarangayName' => $this->areaNameByPcode($visit['barangay_pcode'] ?? ($actor['barangay_pcode'] ?? null)),
             'pendingProfilingRequestCount' => $this->pendingProfilingRequestCount($actor),
         ]);
@@ -302,19 +460,25 @@ class HouseholdProfilingController extends BaseController
 
         $payload = $this->applyLocationLocksToPayload($actor, $payload);
 
-        // Barangay-level users submit update requests only
         if ($this->profilingNeedsStaffApproval()) {
             $builder = service('hhVisitChangeRequestBuilder');
             $requestModel = new HhVisitChangeRequestModel();
 
             $requestData = $builder->buildUpdateRequest($actor, $id, $visit, $payload, $groups ?: []);
+
+            $diffPayload = json_decode($requestData['diff_payload_json'] ?? '[]', true);
+            if (!is_array($diffPayload)) {
+                $diffPayload = [];
+            }
+
+            $requestData['summary_text'] = $this->buildChangeRequestSummary('update', $diffPayload);
+
             $requestModel->insert($requestData);
 
             return redirect()->to(base_url('admin/registry/household-profiling'))
                 ->with('success', 'Update request submitted for review.');
         }
 
-        // Admin / SuperAdmin update live record directly
         $payload['approval_status'] = 'approved';
         $payload['approval_action'] = null;
         $payload['submitted_by_user_id'] = $actor['id'] ?? null;
@@ -413,19 +577,25 @@ class HouseholdProfilingController extends BaseController
                 ->with('error', 'Not allowed.');
         }
 
-        // Staff create delete request only
         if ($this->profilingDeleteNeedsAdminApproval()) {
             $builder = service('hhVisitChangeRequestBuilder');
             $requestModel = new HhVisitChangeRequestModel();
 
             $requestData = $builder->buildDeleteRequest($actor, $id, $visit);
+
+            $diffPayload = json_decode($requestData['diff_payload_json'] ?? '[]', true);
+            if (!is_array($diffPayload)) {
+                $diffPayload = [];
+            }
+
+            $requestData['summary_text'] = $this->buildChangeRequestSummary('delete', $diffPayload);
+
             $requestModel->insert($requestData);
 
             return redirect()->to(base_url('admin/registry/household-profiling'))
                 ->with('success', 'Delete request submitted for admin approval.');
         }
 
-        // Admin / SuperAdmin delete directly
         $db = \Config\Database::connect();
         $db->transStart();
 
