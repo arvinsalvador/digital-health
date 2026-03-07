@@ -8,6 +8,7 @@ class DashboardController extends BaseController
 {
     public function index()
     {
+        $actor = $this->actor();
         return view('admin/dashboard', [
             'title' => 'Admin',
             'pageTitle' => 'Dashboard',
