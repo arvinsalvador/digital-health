@@ -51,6 +51,7 @@ writable/debugbar/*
 !writable/debugbar/index.html
 
 writable/session/*
+public/writable/session/*
 
 php_errors.log
 
